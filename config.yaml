@@ -1,0 +1,10 @@
+# パイプライン設定
+target_award: 夜景賞          # 環境賞 / 夜景賞 / DX賞 / 観光賞
+theme: 北九州の魅力を世界へ
+
+backend: local                # local のみ実装（cloud は実装段階で追加）
+max_retries: 2                # QAリトライの上限
+
+checkpoints:                  # 人が承認する停止点の on/off
+  qa: true
+  assembly: true

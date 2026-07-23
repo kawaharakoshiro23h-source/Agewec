@@ -1,0 +1,30 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- 仮想環境 ---
+.venv/
+venv/
+
+# --- uv ---
+# uv.lock は共有推奨なので追跡する（除外しない）
+
+# --- 環境変数・秘密情報（絶対にコミットしない）---
+.env
+.env.*
+!.env.example
+
+# --- 生成物・作業ファイル ---
+work/
+*.mp4
+*.png
+*.wav
+*.mp3
+
+# --- OS / エディタ ---
+.DS_Store
+.idea/
+.vscode/
