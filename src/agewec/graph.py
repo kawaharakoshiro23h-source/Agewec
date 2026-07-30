@@ -18,7 +18,7 @@ def build_graph(checkpointer=None):
     g = StateGraph(AgentState)
 
     g.add_node("planner", nodes.planner)
-    g.add_node("asset_planner", nodes.asset_planner)
+    g.add_node("asset", nodes.asset)
     g.add_node("image_gen", nodes.image_gen)
     g.add_node("qa", nodes.qa)
     g.add_node("video_gen", nodes.video_gen)
@@ -27,8 +27,8 @@ def build_graph(checkpointer=None):
     g.add_node("provenance", nodes.provenance)
 
     g.add_edge(START, "planner")
-    g.add_edge("planner", "asset_planner")
-    g.add_edge("asset_planner", "image_gen")
+    g.add_edge("planner", "asset")
+    g.add_edge("asset", "image_gen")
     g.add_edge("image_gen", "qa")
     g.add_conditional_edges(
         "qa", nodes.qa_router,

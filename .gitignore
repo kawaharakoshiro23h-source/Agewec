@@ -19,8 +19,11 @@ venv/
 
 # --- 生成物・作業ファイル ---
 work/
+assets_dl/          # 北九州パレットからDLした実写（再取得可能なので追跡しない）
+asset_catalog.json  # 生成物（再生成可能）
 *.mp4
 *.png
+*.jpg
 *.wav
 *.mp3
 

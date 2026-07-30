@@ -8,8 +8,9 @@ dependencies = [
     "langchain-openai>=0.1",   # LM Studio(OpenAI互換API)呼び出し用
     "pydantic>=2",
     "pyyaml>=6",
-    "httpx>=0.27",             # ComfyUI/VOICEVOX 等のHTTP呼び出し用
+    "httpx>=0.27",             # ComfyUI/VOICEVOX/北九州パレット等のHTTP呼び出し用
     "python-dotenv>=1",        # .env からAPIキー等を読み込む
+    "beautifulsoup4>=4.12",    # 北九州パレット・ギャラリーのHTML解析
 ]
 
 [build-system]

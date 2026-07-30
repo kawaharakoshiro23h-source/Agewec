@@ -19,6 +19,10 @@ class Cut:
     motion_prompt: str = ""
     narration: str = ""
     seconds: float = 5.0
+    # 素材の出所: "generate"(AI生成) / "official_photo"(公式写真) / "official_video"(公式動画)
+    source: str = "generate"
+    asset_title: str = ""      # 採用した公式素材のタイトル
+    asset_url: str = ""        # 採用した公式素材のURL
     image_path: str | None = None
     video_path: str | None = None
     qa_ok: bool = False

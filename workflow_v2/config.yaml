@@ -1,0 +1,62 @@
+project:
+  target_award: 夜景賞
+  theme: 北九州の魅力を世界へ
+  target_duration_seconds: 30
+
+# manual / supervised / autonomous / custom
+autonomy_preset: manual
+
+review_policies:
+  executive_producer: always
+  creative_director: always
+  writer_storyboard: always
+  asset_curator: always
+  director: always
+  image_video_production: always
+  visual_qa: always
+  post_production: always
+  review_board: always
+  final_submission: always
+  provenance: always
+
+review:
+  confidence_threshold: 0.75
+  max_retries_per_phase: 2
+
+production:
+  backend: mock
+  profile: draft
+  profiles:
+    draft:
+      width: 576
+      height: 384
+      frames: 49
+      steps: 20
+      fps: 24
+    final:
+      width: 768
+      height: 512
+      frames: 97
+      steps: 30
+      fps: 24
+
+comfy:
+  base_url: http://127.0.0.1:8188
+  workflow_api_json: workflows/ltx_i2v_api.json
+  poll_interval_seconds: 2
+  timeout_seconds: 1800
+  inputs:
+    image: {node_id: "", input: image}
+    positive_prompt: {node_id: "", input: text}
+    negative_prompt: {node_id: "", input: text}
+    width: {node_id: "", input: width}
+    height: {node_id: "", input: height}
+    frames: {node_id: "", input: length}
+    steps: {node_id: "", input: steps}
+    fps: {node_id: "", input: fps}
+    seed: {node_id: "", input: noise_seed}
+    file_prefix: {node_id: "", input: filename_prefix}
+
+paths:
+  work_dir: work
+  provenance_file: work/provenance.json
