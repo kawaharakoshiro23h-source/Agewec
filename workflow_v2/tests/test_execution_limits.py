@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import copy
+import unittest
+from pathlib import Path
+
+import yaml
+
+from agewec_v2.execution_limits import make_execution_guard
+from agewec_v2.graph_safe import build_graph
+from agewec_v2.state import PHASES
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def autonomous_config() -> dict:
+    config = yaml.safe_load(
+        (ROOT / "config.yaml").read_text(encoding="utf-8")
+    )
+    config["autonomy_preset"] = "custom"
+    config["review_policies"] = {phase: "never" for phase in PHASES}
+    config["execution_limits"] = {
+        "max_retries_per_phase": 2,
+        "max_total_phase_executions": 30,
+        "max_runtime_minutes": 60,
+        "on_limit": "abort",
+    }
+    return config
+
+
+class ExecutionLimitsTest(unittest.TestCase):
+    def test_safe_graph_completes_inside_budget(self) -> None:
+        config = autonomous_config()
+        result = build_graph().invoke(
+            {
+                "run_id": "safe-complete",
+                "project": config["project"],
+                "config": config,
+                "phase_results": {},
+                "attempts": {},
+                "feedback": {},
+                "reviews": [],
+                "events": [],
+                "artifacts": [],
+                "aborted": False,
+            }
+        )
+        self.assertFalse(result["aborted"])
+        self.assertEqual(result["current_phase"], "provenance")
+        self.assertEqual(result["transition_count"], 10)
+
+    def test_global_budget_aborts_before_unbounded_execution(self) -> None:
+        config = autonomous_config()
+        config["execution_limits"]["max_total_phase_executions"] = 3
+        result = build_graph().invoke(
+            {
+                "run_id": "safe-abort",
+                "project": config["project"],
+                "config": config,
+                "phase_results": {},
+                "attempts": {},
+                "feedback": {},
+                "reviews": [],
+                "events": [],
+                "artifacts": [],
+                "aborted": False,
+            }
+        )
+        self.assertTrue(result["aborted"])
+        self.assertEqual(result["transition_count"], 3)
+        self.assertEqual(result["limit_status"]["phase"], "asset_curator")
+
+    def test_per_phase_retry_budget_is_enforced(self) -> None:
+        config = autonomous_config()
+        state = {
+            "config": config,
+            "attempts": {"visual_qa": 3},
+            "events": [],
+            "transition_count": 10,
+        }
+        update = make_execution_guard("visual_qa")(state)
+        self.assertEqual(update["guard_route"], "abort")
+        self.assertIn(
+            "最大実行回数3回",
+            update["limit_status"]["violations"][0],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

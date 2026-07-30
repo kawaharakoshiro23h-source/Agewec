@@ -204,6 +204,7 @@ class LLMIntegrationTest(unittest.TestCase):
         config = yaml.safe_load(
             (ROOT / "config_llm.yaml").read_text(encoding="utf-8")
         )
+        config["production"]["backend"] = "mock"
         config["autonomy_preset"] = "custom"
         config["review_policies"] = {
             phase: "never"
