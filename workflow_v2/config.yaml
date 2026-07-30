@@ -12,27 +12,43 @@ review_policies:
   writer_storyboard: always
   asset_curator: always
   director: always
-  image_video_production: always
+  support_video_creator: always
+  image_video_production: never
+  cut_visual_qa: always
   visual_qa: always
   post_production: always
   review_board: always
   final_submission: always
-  provenance: always
+  provenance: on_exception
 
 review:
   confidence_threshold: 0.75
   max_retries_per_phase: 2
 
+storyboard:
+  max_narration_characters_per_second: 8
+  final_default_media_requirement: video_required
+
+assets:
+  require_primary_for_every_cut: true
+  prefer_local: true
+  usage_scope: agewec_submission
+  auto_download_missing: false
+
 execution_limits:
   max_retries_per_phase: 2
   phase_retry_overrides:
-    image_video_production: 2
-    visual_qa: 2
+    support_video_creator: 6
+    image_video_production: 20
+    cut_visual_qa: 20
+    visual_qa: 4
     post_production: 2
     review_board: 2
-  max_total_phase_executions: 30
+  max_total_phase_executions: 60
   max_runtime_minutes: 60
   on_limit: human_review
+  max_generation_attempts_per_cut: 2
+  max_total_production_attempts: 20
 
 production:
   backend: mock
@@ -52,6 +68,30 @@ production:
       frames: 97
       steps: 30
       fps: 24
+  model_constraints:
+    frame_multiple: 8
+    frame_offset: 1
+    max_frames: 257
+
+qa:
+  duration_tolerance_seconds: 0.25
+  representative_frame_count: 3
+
+post_production:
+  width: 576
+  height: 384
+  fps: 24
+  duration_tolerance_seconds: 0.25
+
+review_board:
+  mode: human_only
+  skip_reason: submission deadline priority
+  pass_threshold: 3.8
+  minimum_criterion_score: 3.0
+  require_no_blocking_issues: true
+
+final_submission:
+  require_human: true
 
 comfy:
   base_url: http://127.0.0.1:8188
@@ -73,3 +113,4 @@ comfy:
 paths:
   work_dir: work
   provenance_file: work/provenance.json
+  submissions_dir: submissions

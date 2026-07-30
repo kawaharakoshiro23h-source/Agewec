@@ -36,8 +36,7 @@ def resolve_policy(config: dict[str, Any], phase: str) -> str:
     preset = PRESETS.get(preset_name, {})
     policy = preset.get(phase, preset.get("*", "always"))
     overrides = config.get("review_policies", {})
-    if preset_name == "custom":
-        policy = overrides.get(phase, policy)
+    policy = overrides.get(phase, policy)
     if policy not in VALID_POLICIES:
         raise ValueError(f"Unknown review policy for {phase}: {policy}")
     return policy
@@ -59,16 +58,89 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         if value == "retry":
             value = "retry_with_feedback"
-        return {"action": value, "feedback": ""}
+        return {
+            "action": value,
+            "feedback": "",
+            "target_cut_id": None,
+            "correction_type": "",
+            "project_updates": {},
+        }
     if isinstance(value, dict):
         action = value.get("action", "approve")
         if action == "retry":
             action = "retry_with_feedback"
+        target_cut_id = value.get("target_cut_id")
+        if target_cut_id is not None:
+            target_cut_id = int(target_cut_id)
+            if target_cut_id <= 0:
+                raise ValueError("target_cut_id must be a positive integer")
+        project_updates = value.get("project_updates") or {}
+        if not isinstance(project_updates, dict):
+            raise ValueError("project_updates must be an object")
         return {
             "action": action,
             "feedback": str(value.get("feedback") or ""),
+            "target_cut_id": target_cut_id,
+            "correction_type": str(value.get("correction_type") or ""),
+            "project_updates": project_updates,
         }
-    return {"action": "approve", "feedback": ""}
+    return {
+        "action": "approve",
+        "feedback": "",
+        "target_cut_id": None,
+        "correction_type": "",
+        "project_updates": {},
+    }
+
+
+def _review_target_phase(
+    phase: str,
+    source: str,
+    correction_type: str,
+) -> str:
+    if phase not in {"director", "support_video_creator"}:
+        return source
+    mapping = {
+        "asset": "asset_curator",
+        "asset_selection": "asset_curator",
+        "storyboard": "writer_storyboard",
+        "structure": "writer_storyboard",
+        "concept": "creative_director",
+        "direction": "director",
+        "prompt": "director",
+        "camera": "director",
+        "generation_parameters": "support_video_creator",
+        "production_parameters": "support_video_creator",
+    }
+    return mapping.get(correction_type, source)
+
+
+def _apply_project_updates(
+    project: dict[str, Any],
+    updates: dict[str, Any],
+) -> dict[str, Any]:
+    if not updates:
+        return project
+    allowed = {
+        "target_award",
+        "theme",
+        "target_duration_seconds",
+        "audience",
+        "deliverable",
+    }
+    unknown = sorted(set(updates) - allowed)
+    if unknown:
+        raise ValueError(
+            "Unsupported project_updates: " + ", ".join(unknown)
+        )
+    merged = dict(project)
+    merged.update(updates)
+    if "target_duration_seconds" in merged:
+        duration = float(merged["target_duration_seconds"])
+        if duration <= 0:
+            raise ValueError("target_duration_seconds must be positive")
+        merged["target_duration_seconds"] = duration
+    return merged
 
 
 def make_review_gate(
@@ -86,9 +158,18 @@ def make_review_gate(
         threshold = float(
             config.get("review", {}).get("confidence_threshold", 0.75)
         )
-        needs_human = policy == "always"
+        force_human = bool(
+            phase == "final_submission"
+            and config.get("final_submission", {}).get(
+                "require_human",
+                True,
+            )
+        )
+        needs_human = policy == "always" or force_human
         if policy == "on_exception":
-            needs_human = _has_exception(result, threshold)
+            needs_human = (
+                _has_exception(result, threshold) or force_human
+            )
 
         payload = {
             "kind": "review_gate",
@@ -103,12 +184,47 @@ def make_review_gate(
             "warnings": result.get("warnings", []),
             "artifacts": result.get("artifacts", []),
             "actions": ["approve", "retry_with_feedback", "abort"],
+            "require_human": force_human,
+            "retry_fields": {
+                "feedback": "修正内容",
+                "target_cut_id": "対象カットだけを修正する場合のID",
+                "correction_type": (
+                    "direction / asset / storyboard / concept"
+                ),
+                "project_updates": (
+                    "Executive Producerで構造化条件を変更する場合"
+                ),
+            },
         }
+        if phase == "final_submission":
+            post = (
+                state.get("phase_results", {})
+                .get("post_production", {})
+                .get("data", {})
+            )
+            payload.update(
+                {
+                    "final_video": state.get("final_output"),
+                    "final_technical_qa": post.get(
+                        "technical_qa",
+                        {},
+                    ),
+                    "review_board": result.get("data", {}),
+                    "unresolved_warnings": [
+                        warning
+                        for phase_result in state.get(
+                            "phase_results",
+                            {},
+                        ).values()
+                        for warning in phase_result.get("warnings", [])
+                    ],
+                }
+            )
         if needs_human:
             decision = _normalize_decision(interrupt(payload))
             decided_by = "human"
         else:
-            decision = {"action": "approve", "feedback": ""}
+            decision = _normalize_decision("approve")
             decided_by = "policy"
 
         action = decision["action"]
@@ -118,9 +234,29 @@ def make_review_gate(
                 f"Unsupported review action: {decision.get('action')}"
             )
 
+        target_phase = _review_target_phase(
+            phase,
+            source,
+            decision.get("correction_type", ""),
+        )
         feedback = dict(state.get("feedback", {}))
+        review_context = dict(state.get("review_context", {}))
+        project = dict(state.get("project", {}))
         if action == "retry_with_feedback":
-            feedback[source] = decision.get("feedback", "")
+            feedback[target_phase] = decision.get("feedback", "")
+            review_context[target_phase] = {
+                "source_review": phase,
+                "target_cut_id": decision.get("target_cut_id"),
+                "correction_type": decision.get("correction_type", ""),
+            }
+            if source == "executive_producer":
+                project = _apply_project_updates(
+                    project,
+                    decision.get("project_updates", {}),
+                )
+        elif action == "approve":
+            feedback.pop(source, None)
+            review_context.pop(source, None)
 
         reviews = list(state.get("reviews", []))
         reviews.append(
@@ -132,6 +268,10 @@ def make_review_gate(
                 "action": action,
                 "feedback": decision.get("feedback", ""),
                 "decided_by": decided_by,
+                "target_phase": target_phase,
+                "target_cut_id": decision.get("target_cut_id"),
+                "correction_type": decision.get("correction_type", ""),
+                "project_updates": decision.get("project_updates", {}),
             }
         )
         events = list(state.get("events", []))
@@ -151,7 +291,10 @@ def make_review_gate(
         }[action]
         return {
             "review_route": route,
+            "review_target_phase": target_phase,
             "feedback": feedback,
+            "review_context": review_context,
+            "project": project,
             "reviews": reviews,
             "events": events,
             "aborted": action == "abort",

@@ -22,10 +22,19 @@ def autonomous_config() -> dict:
     config["review_policies"] = {phase: "never" for phase in PHASES}
     config["execution_limits"] = {
         "max_retries_per_phase": 2,
+        "phase_retry_overrides": {
+            "support_video_creator": 6,
+            "image_video_production": 20,
+            "cut_visual_qa": 20,
+            "visual_qa": 4,
+        },
         "max_total_phase_executions": 30,
         "max_runtime_minutes": 60,
         "on_limit": "abort",
+        "max_generation_attempts_per_cut": 2,
+        "max_total_production_attempts": 20,
     }
+    config["final_submission"]["require_human"] = False
     return config
 
 
@@ -48,7 +57,7 @@ class ExecutionLimitsTest(unittest.TestCase):
         )
         self.assertFalse(result["aborted"])
         self.assertEqual(result["current_phase"], "provenance")
-        self.assertEqual(result["transition_count"], 10)
+        self.assertEqual(result["transition_count"], 22)
 
     def test_global_budget_aborts_before_unbounded_execution(self) -> None:
         config = autonomous_config()
@@ -75,11 +84,11 @@ class ExecutionLimitsTest(unittest.TestCase):
         config = autonomous_config()
         state = {
             "config": config,
-            "attempts": {"visual_qa": 3},
+            "attempts": {"executive_producer": 3},
             "events": [],
             "transition_count": 10,
         }
-        update = make_execution_guard("visual_qa")(state)
+        update = make_execution_guard("executive_producer")(state)
         self.assertEqual(update["guard_route"], "abort")
         self.assertIn(
             "最大実行回数3回",

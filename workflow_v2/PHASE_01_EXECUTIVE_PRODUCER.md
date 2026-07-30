@@ -9,12 +9,12 @@
 
 ## 修正後の確定仕様
 
-状態: `design_confirmed / implementation_partial`
+状態: `implemented`
 
 - 最初に入力した`target_duration_seconds`を、作品全体の正式な目標尺として固定する。
 - Executive ProducerのLLMは尺を新しく決めるのではなく、構造化入力を`ProjectBrief`へ正確に反映する。
 - Writer / Storyboardはこの尺を各カットへ配分し、Post Productionは独自判断で変更しない。
-- 秒数、応募部門、用途などのプロジェクト条件を変更する場合は、自由記述の再生成指示だけに依存せず、将来は構造化された`project_updates`として更新する。
+- 秒数、応募部門、用途などのプロジェクト条件を変更する場合は、自由記述だけでなく構造化された`project_updates`として更新する。
 - 次工程以降には元の`project`と承認済み`ProjectBrief`の両方を渡し、重要条件を追跡可能にする。
 
 ## 処理フロー
@@ -67,9 +67,10 @@ project:
 2. 役割プロンプトと入力情報をLM StudioのLLMへ渡す
 3. LLMが制作目的、視聴者、成果物、制約、成功基準を作成する
 4. 出力を`ProjectBrief`のJSON Schemaで検証する
-5. JSON不正や必須項目不足の場合、LLMへ修正を依頼する
-6. 正常な結果とLLM実行情報をLangGraphのStateへ保存する
-7. Review Gateで人間の判断を待つ
+5. 目標尺と応募賞が元の`project`から変更されていないか検証する
+6. JSON不正や必須項目不足の場合、LLMへ修正を依頼する
+7. 正常な結果とLLM実行情報をLangGraphのStateへ保存する
+8. Review Gateで人間の判断を待つ
 
 LLM出力の内部修正試行は、現在は初回を含め最大3回。
 
@@ -81,6 +82,7 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
 {
   "objective": "この動画で達成する目的",
   "target_award": "応募する賞",
+  "target_duration_seconds": 30,
   "audience": "想定視聴者",
   "deliverable": "制作する成果物",
   "constraints": [
@@ -123,6 +125,8 @@ Creative Directorは、元の`project`とこの`ProjectBrief`の両方を入力�
 - 制約
 - 成功基準
 - 情報の具体性や粒度
+- `project_updates.target_duration_seconds`による正式な目標尺変更
+- `target_award`、`theme`、`audience`、`deliverable`の構造化更新
 
 例:
 
@@ -131,21 +135,22 @@ Creative Directorは、元の`project`とこの`ProjectBrief`の両方を入力�
 成功基準をより測定可能な内容にしてください。
 ```
 
-### 現在、修正指示だけでは変更できないもの
+### 自由記述だけでは変更できないもの
 
-- `target_duration_seconds`
-- `target_award`
-- `theme`
+- `target_duration_seconds`、`target_award`、`theme`などの構造化条件
 - Review Policyや実行上限などのシステム設定
 
-これらはプロジェクトの基準値であり、現在はワークフロー開始前に
-`config_llm.yaml`で指定する。
+CLIでは再実行時に目標秒数を追加入力できる。APIからは次の形式を使う。
 
-例えばレビュー欄へ「40秒にして」と入力しても、正式な
-`target_duration_seconds`は30秒のままであり、後続Storyboardも30秒を基準にする。
-
-将来Review Gateからこれらを変更する場合は、文章フィードバックとは別に
-`project_updates`のような構造化された設定更新処理が必要。
+```json
+{
+  "action": "retry_with_feedback",
+  "feedback": "目標尺を変更する",
+  "project_updates": {
+    "target_duration_seconds": 40
+  }
+}
+```
 
 ## エラー時
 

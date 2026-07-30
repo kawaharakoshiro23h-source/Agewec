@@ -13,7 +13,7 @@ AGEWEC公式素材カタログ内の画像はAGEWEC提出用途で使用可能�
 
 ## 修正後の確定仕様
 
-状態: `design_confirmed / implementation_pending`
+状態: `implemented`（全素材の事前ダウンロードだけは別タスク）
 
 - 全カットに最低1件の素材を必須とし、0件のカットがあれば次工程へ進めない。
 - 複数候補は`primary`と`alternatives`へ順位付けする。
@@ -47,8 +47,8 @@ flowchart LR
     H -->|"中止"| X["終了"]
 ```
 
-`全カットに1件以上あるか`の強制検証と自動ダウンロードは、現在はまだ
-未実装であり、後の修正対象。
+`全カットに1件以上あるか`は現在強制検証する。自動ダウンロードは設定項目を
+用意しているが、全公式素材の一括取得は別タスクとして残している。
 
 ## 最初に渡す情報
 
@@ -63,14 +63,19 @@ Writer / Storyboardが作成した各カットの次の情報を渡す。
   "scene": "昼の門司港で人々が活動している様子",
   "narration": "海と山に抱かれた、動き続ける街。",
   "seconds": 6,
-  "media_strategy": "still"
+  "media_requirement": "video_required",
+  "time_of_day": "day",
+  "visual_role": "opening",
+  "location": "門司港",
+  "subject": "街と人"
 }
 ```
 
 - `id`: 素材を対応付けるカットID
 - `scene`: 必要な写真の内容
 - `seconds`: 素材を使用する時間
-- `media_strategy`: 静止画利用か、Image-to-Videoの入力にするか
+- `media_requirement`: 最終成果物で必要な媒体
+- `time_of_day / visual_role / location / subject`: 素材検索条件
 
 ### 素材候補
 
@@ -88,7 +93,12 @@ Writer / Storyboardが作成した各カットの次の情報を渡す。
   "areas": [
     "八幡東区"
   ],
-  "local_path": "assets_dl/皿倉山夜景03.jpg"
+  "local_path": "assets_dl/皿倉山夜景03.jpg",
+  "local_available": true,
+  "time_of_day": "night",
+  "usage_scope": "agewec_submission",
+  "rights_status": "approved_for_agewec_submission",
+  "sha256": "..."
 }
 ```
 
@@ -103,7 +113,7 @@ LLMには画像データそのものではなく、現在はタイトル、ジ�
 2. 承認済みStoryboardを取得する
 3. 素材カタログから候補を抽出する
 4. Storyboardと素材候補をAsset Curator LLMへ渡す
-5. LLMが各カットに適した`asset_id`と選定理由を返す
+5. LLMが各カットの`primary`と`alternatives`を返す
 6. 存在するカットIDと素材IDだけが使われているか検証する
 7. 選定結果と素材情報を結合してAsset Manifestを作成する
 8. 結果とLLM実行情報をLangGraphのStateへ保存する
@@ -116,7 +126,7 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
 
 ## カットと素材の関係
 
-目標とするルールは次のとおり。
+現在実装しているルールは次のとおり。
 
 - 各カットには素材を1件以上割り当てる
 - 1つのカットに複数素材を割り当ててもよい
@@ -133,43 +143,34 @@ flowchart LR
     C3 --> A5["Alternative Asset"]
 ```
 
-現在のコードは複数素材を選択できるが、全カットに1件以上あることを
-強制していない。未割り当てカットを`unassigned_cut_ids`へ記録するだけで、
-次へ進む可能性がある。
+素材0件のカットがあればSchema変換を失敗させ、Directorへ進ませない。
 
 ## 次のステップへ渡す情報
 
-現在の出力は素材情報を含む`selected_assets`の一覧。
-
-後の修正では、次のような`AssetManifest`へ整理する。
+現在の出力は次の`AssetManifest`。`asset_assignments`に構造化された
+`primary / alternatives`を持ち、`selected_assets`は下流互換用のPrimary一覧。
 
 ```json
 {
   "catalog_source": "AGEWEC公式素材カタログ",
   "usage_scope": "agewec_submission",
   "rights_check_required": false,
-  "selected_assets": [
+  "asset_assignments": [
     {
       "cut_id": 1,
-      "asset_id": "asset-012",
-      "role": "primary",
-      "rank": 1,
-      "title": "昼の門司港レトロ",
-      "source_url": "画像URL",
-      "detail_url": "詳細ページURL",
-      "local_path": "assets_dl/mojiko-day.jpg",
-      "selection_reason": "昼の活動を表すカットに適している"
-    },
-    {
-      "cut_id": 1,
-      "asset_id": "asset-013",
-      "role": "alternative",
-      "rank": 2,
-      "title": "門司港の街並み",
-      "source_url": "画像URL",
-      "detail_url": "詳細ページURL",
-      "local_path": "assets_dl/mojiko-street.jpg",
-      "selection_reason": "代替の昼素材として利用できる"
+      "primary": {
+        "asset_id": "asset-012",
+        "title": "昼の門司港レトロ",
+        "local_path": "assets_dl/mojiko-day.jpg",
+        "selection_reason": "昼の活動を表すカットに適している"
+      },
+      "alternatives": [
+        {
+          "asset_id": "asset-013",
+          "title": "門司港の街並み",
+          "selection_reason": "代替の昼素材として利用できる"
+        }
+      ]
     }
   ],
   "missing_requirements": [],
@@ -185,10 +186,10 @@ Directorは各カットの`primary`素材を基本入力として使い、代替
 今回のAGEWEC公式素材カタログ内の画像は、AGEWEC提出用途で使用可能という
 前提にする。
 
-そのため、後の修正では次を行う。
+そのため、現在は次のように処理する。
 
-- LLMによる`rights_risk`分類を削除する
-- `rights_status: review_required`を削除する
+- LLMによる`rights_risk`分類は使用しない
+- `rights_status: review_required`は使用しない
 - `rights_check_required`を`false`にする
 - 権利確認を促す警告を削除する
 - 元画像URLと詳細ページURLは証跡として残す
@@ -228,8 +229,8 @@ Cut 4のメイン素材は皿倉山からの夜景にしてください。
 すべてのカットに最低1件の素材を割り当ててください。
 ```
 
-修正指示を受けると、特定素材だけを直接編集するのではなく、LLMが
-素材選定全体を再生成する。
+`target_cut_id`を付けた修正指示では対象カットだけを再選定し、他の
+承認済み割当は固定する。IDを付けない場合は全体を再選定する。
 
 ### 現在、修正指示だけでは変更できないもの
 
@@ -246,16 +247,10 @@ Asset CuratorのReview GateからWriterへ直接戻る経路も、現在は実�
 
 ## 現在の注意点
 
-- 全カットへの最低1素材割り当ては未実装
-- 複数素材の`primary / alternative`区別は未実装
 - 未ダウンロード素材をLLMが選ぶ可能性がある
 - 不足素材の自動ダウンロードは未実装
-- 現在は夜景賞を夜景ジャンルの素材フィルタとして使っている
-- 昼・夕方・夜をカット単位で検索する属性は未実装
 - LLMは実画像ではなくメタデータを中心に選定している
-- 公式素材向けの権利チェック省略は未実装
-
-これらは全フェーズの仕様確認後にまとめて修正する。
+- 全公式素材のローカル事前取得は別タスク
 
 ## エラー時
 
@@ -265,5 +260,5 @@ Review Gateへ渡す。
 存在しないカットIDや素材IDをLLMが返した場合はJSON変換を失敗させ、
 LLMへ修正を依頼する。
 
-後の修正では、素材0件のカットが1つでも存在する場合も`error`として
-次のDirectorへ進ませない。
+素材0件のカットが1つでも存在する場合も検証エラーとし、次のDirectorへ
+進ませない。

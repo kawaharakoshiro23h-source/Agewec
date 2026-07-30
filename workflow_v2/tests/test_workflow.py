@@ -8,6 +8,7 @@ import yaml
 
 from agewec_v2.graph import build_graph
 from agewec_v2.review import resolve_policy
+from agewec_v2.state import PHASES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,21 +37,9 @@ class WorkflowV2Test(unittest.TestCase):
         config = copy.deepcopy(self.config)
         config["autonomy_preset"] = "custom"
         config["review_policies"] = {
-            phase: "never"
-            for phase in (
-                "executive_producer",
-                "creative_director",
-                "writer_storyboard",
-                "asset_curator",
-                "director",
-                "image_video_production",
-                "visual_qa",
-                "post_production",
-                "review_board",
-                "final_submission",
-                "provenance",
-            )
+            phase: "never" for phase in PHASES
         }
+        config["final_submission"]["require_human"] = False
         result = build_graph().invoke(
             {
                 "run_id": "test-run",
@@ -68,8 +57,65 @@ class WorkflowV2Test(unittest.TestCase):
         self.assertNotIn("__interrupt__", result)
         self.assertEqual(result["current_phase"], "provenance")
         self.assertIn("provenance", result["phase_results"])
-        self.assertTrue(Path(result["final_output"]).exists())
-        self.assertEqual(len(result["reviews"]), 11)
+        final_output = Path(result["final_output"])
+        self.assertTrue(final_output.exists())
+        self.assertEqual(final_output.name, "final_video.mp4")
+        self.assertEqual(result["approved_cut_ids"], [1, 2, 3, 4, 5, 6])
+        post = result["phase_results"]["post_production"]["data"]
+        self.assertEqual(post["implementation"], "ffmpeg_executed")
+        self.assertEqual(post["technical_qa"]["status"], "pass")
+        submission_dir = Path(
+            result["phase_results"]["provenance"]["data"][
+                "package_dir"
+            ]
+        )
+        for name in (
+            "final_video.mp4",
+            "manifest.json",
+            "provenance.json",
+            "process_report.md",
+            "process_report.html",
+            "decision_log.jsonl",
+            "technical_report.json",
+            "storyboard.json",
+            "direction_plan.json",
+        ):
+            self.assertTrue(
+                (submission_dir / name).exists(),
+                msg=f"missing submission artifact: {name}",
+            )
+        self.assertEqual(len(result["reviews"]), 16)
+
+    def test_h3_interrupt_is_mandatory_even_in_autonomous_mode(self) -> None:
+        config = copy.deepcopy(self.config)
+        config["autonomy_preset"] = "custom"
+        config["review_policies"] = {
+            phase: "never" for phase in PHASES
+        }
+        config["final_submission"]["require_human"] = True
+        result = build_graph().invoke(
+            {
+                "run_id": "test-h3-required",
+                "project": config["project"],
+                "config": config,
+                "phase_results": {},
+                "attempts": {},
+                "feedback": {},
+                "reviews": [],
+                "events": [],
+                "artifacts": [],
+                "aborted": False,
+            }
+        )
+        self.assertIn("__interrupt__", result)
+        payload = result["__interrupt__"][0].value
+        self.assertEqual(payload["phase"], "final_submission")
+        self.assertTrue(payload["require_human"])
+        self.assertTrue(Path(payload["final_video"]).exists())
+        self.assertEqual(
+            payload["final_technical_qa"]["status"],
+            "pass",
+        )
 
 
 if __name__ == "__main__":

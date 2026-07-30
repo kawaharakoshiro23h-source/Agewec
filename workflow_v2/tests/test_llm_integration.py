@@ -20,6 +20,7 @@ ROLE_OUTPUTS = {
     "executive_producer": {
         "objective": "北九州の夜景を紹介する",
         "target_award": "夜景賞",
+        "target_duration_seconds": 30,
         "audience": "旅行者",
         "deliverable": "30秒の観光動画",
         "constraints": ["出典を記録する"],
@@ -31,8 +32,14 @@ ROLE_OUTPUTS = {
         "tone": ["cinematic"],
         "visual_language": {
             "palette": ["deep blue", "amber"],
-            "camera": "slow movement",
             "continuity_rule": "光の方向を維持",
+        },
+        "camera_intent": {
+            "viewer_experience": "昼から荘厳な夜景へ導く",
+            "energy_curve": "active_to_calm",
+            "stability": "mostly_stable",
+            "continuity": "移動方向を自然につなぐ",
+            "hard_constraints": ["建築と地形を維持する"],
         },
         "audio_direction": "静かに始まり広がる",
         "success_criteria": ["北九州固有の魅力が伝わる"],
@@ -46,7 +53,11 @@ ROLE_OUTPUTS = {
                 "scene": "北九州の夜景",
                 "narration": "光の街へ。",
                 "seconds": 15,
-                "media_strategy": "still",
+                "media_requirement": "video_required",
+                "time_of_day": "day",
+                "visual_role": "opening",
+                "location": "小倉",
+                "subject": "街と人",
             },
             {
                 "id": 2,
@@ -54,7 +65,11 @@ ROLE_OUTPUTS = {
                 "scene": "工場夜景",
                 "narration": "未来を照らす。",
                 "seconds": 15,
-                "media_strategy": "video",
+                "media_requirement": "video_required",
+                "time_of_day": "night",
+                "visual_role": "climax",
+                "location": "皿倉山",
+                "subject": "夜景",
             },
         ],
     },
@@ -62,15 +77,19 @@ ROLE_OUTPUTS = {
         "selections": [
             {
                 "cut_id": 1,
-                "asset_id": "asset-001",
-                "reason": "夜景の導入に合う",
-                "rights_risk": "medium",
+                "primary": {
+                    "asset_id": "asset-001",
+                    "reason": "導入に合う",
+                },
+                "alternatives": [],
             },
             {
                 "cut_id": 2,
-                "asset_id": "asset-002",
-                "reason": "産業景観に合う",
-                "rights_risk": "medium",
+                "primary": {
+                    "asset_id": "asset-002",
+                    "reason": "産業景観に合う",
+                },
+                "alternatives": [],
             },
         ],
         "missing_requirements": [],
@@ -83,7 +102,10 @@ ROLE_OUTPUTS = {
                 "positive_prompt": "Kitakyushu night view, slow push in",
                 "negative_prompt": "",
                 "camera_motion": "slow push in",
-                "generation_profile": "draft",
+                "motion_intensity": "subtle",
+                "rationale": "導入に奥行きを与える",
+                "camera_intent_alignment": "安定した導入",
+                "deviation_reason": None,
             },
             {
                 "cut_id": 2,
@@ -91,7 +113,10 @@ ROLE_OUTPUTS = {
                 "positive_prompt": "Kitakyushu industrial lights, slow pan",
                 "negative_prompt": "",
                 "camera_motion": "slow pan",
-                "generation_profile": "draft",
+                "motion_intensity": "subtle",
+                "rationale": "街の広がりを見せる",
+                "camera_intent_alignment": "終盤へ穏やかに導く",
+                "deviation_reason": None,
             },
         ],
         "continuity_checks": ["deep blueとamberを維持"],
@@ -205,6 +230,8 @@ class LLMIntegrationTest(unittest.TestCase):
             (ROOT / "config_llm.yaml").read_text(encoding="utf-8")
         )
         config["production"]["backend"] = "mock"
+        config["review_board"]["mode"] = "ai"
+        config["final_submission"]["require_human"] = False
         config["autonomy_preset"] = "custom"
         config["review_policies"] = {
             phase: "never"
@@ -214,7 +241,9 @@ class LLMIntegrationTest(unittest.TestCase):
                 "writer_storyboard",
                 "asset_curator",
                 "director",
+                "support_video_creator",
                 "image_video_production",
+                "cut_visual_qa",
                 "visual_qa",
                 "post_production",
                 "review_board",
@@ -249,7 +278,14 @@ class LLMIntegrationTest(unittest.TestCase):
         with patch.dict(os.environ, env, clear=False):
             result = build_graph().invoke(initial)
 
-        expected_roles = set(ROLE_OUTPUTS)
+        expected_roles = {
+            "executive_producer",
+            "creative_director",
+            "writer_storyboard",
+            "asset_curator",
+            "director",
+            "review_board",
+        }
         self.assertEqual(set(FakeChatHandler.roles), expected_roles)
         for role in expected_roles:
             llm = result["phase_results"][role]["llm"]
@@ -257,8 +293,13 @@ class LLMIntegrationTest(unittest.TestCase):
             self.assertEqual(llm["model"], "fake-model")
             self.assertEqual(llm["usage"]["total_tokens"], 30)
 
-        provenance_path = Path(result["final_output"])
-        self.assertTrue(provenance_path.exists())
+        final_video_path = Path(result["final_output"])
+        self.assertTrue(final_video_path.exists())
+        provenance_path = Path(
+            result["phase_results"]["provenance"]["data"][
+                "provenance"
+            ]
+        )
         self.assertNotIn(
             "test-secret-never-persist",
             provenance_path.read_text(encoding="utf-8"),

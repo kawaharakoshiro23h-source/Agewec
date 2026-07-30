@@ -92,12 +92,13 @@ def _complete(
 def executive_producer(state: WorkflowState) -> dict[str, Any]:
     phase = "executive_producer"
     project = state.get("project", {})
-    duration = int(project.get("target_duration_seconds", 30))
+    duration = float(project.get("target_duration_seconds", 30))
     brief = {
         "objective": project.get("theme", "北九州の魅力を世界へ"),
         "target_award": project.get("target_award", "夜景賞"),
+        "target_duration_seconds": duration,
         "audience": "北九州をまだ訪れたことのない国内外の旅行者",
-        "deliverable": f"{duration}秒の観光プロモーション動画",
+        "deliverable": f"{duration:g}秒の観光プロモーション動画",
         "constraints": [
             "素材の出典と利用条件を記録する",
             "ローカル生成を基本とし、バックエンドを交換可能にする",
@@ -108,6 +109,7 @@ def executive_producer(state: WorkflowState) -> dict[str, Any]:
             "映像とナレーションの主張が一致する",
             "提出資料から生成過程を追跡できる",
         ],
+        "source_project": project,
     }
     return _complete(
         state,
@@ -127,8 +129,17 @@ def creative_director(state: WorkflowState) -> dict[str, Any]:
         "tone": ["cinematic", "authentic", "quietly futuristic"],
         "visual_language": {
             "palette": ["deep blue", "warm amber", "steel gray"],
-            "camera": "緩やかなプッシュイン、パン、俯瞰",
             "continuity_rule": "夜へ向かう時間軸と光のモチーフを維持する",
+        },
+        "camera_intent": {
+            "viewer_experience": "昼の活気から荘厳な夜景へ導く",
+            "energy_curve": "active_to_calm",
+            "stability": "mostly_stable",
+            "continuity": "カット間の移動方向と速度を自然につなぐ",
+            "hard_constraints": [
+                "激しい回転を避ける",
+                "実在する建築と地形を維持する",
+            ],
         },
         "audio_direction": "静かな導入から希望を感じる広がりへ",
         "success_criteria": brief["success_criteria"],
@@ -144,31 +155,101 @@ def creative_director(state: WorkflowState) -> dict[str, Any]:
 
 def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
     phase = "writer_storyboard"
-    duration = int(state.get("project", {}).get("target_duration_seconds", 30))
+    duration = float(
+        state.get("project", {}).get("target_duration_seconds", 30)
+    )
     base_cuts = [
-        ("導入", "夕暮れから夜へ移る北九州の全景", "光が目覚める街、北九州。", "still"),
-        ("夜景", "皿倉山から広がる街の光", "百万の光が、ひとつの物語になる。", "video"),
-        ("産業", "海と工場群の光が水面に反射する", "ものづくりの記憶は、未来を照らす。", "video"),
-        ("歴史", "歴史的建築と現代の街並み", "受け継いだ時間が、新しい景色をつくる。", "still"),
-        ("人と街", "街を歩く人々と交通の光跡", "ここには、暮らしの温度がある。", "video"),
-        ("締め", "夜景から北九州のタイトルへ", "光の先へ。北九州で会いましょう。", "still"),
+        (
+            "導入",
+            "昼の北九州で人々の活動が始まる",
+            "今日も、北九州から新しい一日が始まる。",
+            "day",
+            "opening",
+            "北九州市街",
+            "街と人の活動",
+        ),
+        (
+            "港",
+            "港と海を行き交う船や物流",
+            "海とともに育った街。",
+            "day",
+            "expansion",
+            "北九州港",
+            "海と港湾",
+        ),
+        (
+            "産業",
+            "工場群と都市の営み",
+            "ものづくりの力が、未来を動かす。",
+            "late_afternoon",
+            "development",
+            "工場地帯",
+            "産業景観",
+        ),
+        (
+            "歴史",
+            "歴史的建築と現代の街並み",
+            "受け継いだ時間が、新しい景色をつくる。",
+            "sunset",
+            "transition",
+            "門司港・小倉",
+            "歴史的建築",
+        ),
+        (
+            "人と街",
+            "灯り始めた街を人々が行き交う",
+            "ここには、暮らしの温度がある。",
+            "blue_hour",
+            "emotional_bridge",
+            "小倉都心部",
+            "人と交通",
+        ),
+        (
+            "締め",
+            "皿倉山から広がる荘厳な北九州の夜景",
+            "光の先へ。北九州で会いましょう。",
+            "night",
+            "climax",
+            "皿倉山",
+            "北九州の夜景",
+        ),
     ]
-    seconds = max(2.0, duration / len(base_cuts))
+    seconds = duration / len(base_cuts)
     cuts = []
-    for index, (name, scene, narration, strategy) in enumerate(base_cuts, start=1):
+    allocated = 0.0
+    for index, (
+        name,
+        scene,
+        narration,
+        time_of_day,
+        visual_role,
+        location,
+        subject,
+    ) in enumerate(base_cuts, start=1):
+        cut_seconds = (
+            round(duration - allocated, 2)
+            if index == len(base_cuts)
+            else round(seconds, 2)
+        )
+        allocated += cut_seconds
         cuts.append(
             {
                 "id": index,
                 "name": name,
                 "scene": scene,
                 "narration": narration,
-                "seconds": round(seconds, 2),
-                "media_strategy": strategy,
+                "seconds": cut_seconds,
+                "media_requirement": "video_required",
+                "time_of_day": time_of_day,
+                "visual_role": visual_role,
+                "location": location,
+                "subject": subject,
             }
         )
     storyboard = {
-        "total_seconds": round(sum(c["seconds"] for c in cuts), 2),
+        "total_seconds": float(duration),
         "cuts": cuts,
+        "duration_source": "project.target_duration_seconds",
     }
     return _complete(
         state,
@@ -197,66 +278,146 @@ def _local_asset_path(image_url: str) -> str | None:
 
 def asset_curator(state: WorkflowState) -> dict[str, Any]:
     phase = "asset_curator"
-    award = state.get("project", {}).get("target_award", "夜景賞")
-    genre = AWARD_GENRES.get(award)
-    catalog = _load_catalog()
-    candidates = catalog.get("photos", [])
-    matches = (
-        [p for p in candidates if genre in p.get("genres", [])]
-        if genre
-        else candidates
+    cuts = (
+        state.get("phase_results", {})
+        .get("writer_storyboard", {})
+        .get("data", {})
+        .get("cuts", [])
     )
-    selected = []
-    for photo in matches[:6]:
-        selected.append(
+    catalog = _load_catalog()
+    candidates = []
+    for index, photo in enumerate(catalog.get("photos", []), start=1):
+        local_path = _local_asset_path(photo.get("image_url", ""))
+        candidates.append(
             {
+                "asset_id": f"asset-{index:03d}",
                 "title": photo.get("title", ""),
                 "source_url": photo.get("image_url", ""),
                 "detail_url": photo.get("detail_url", ""),
                 "genres": photo.get("genres", []),
                 "areas": photo.get("areas", []),
-                "local_path": _local_asset_path(photo.get("image_url", "")),
-                "rights_status": "review_required",
-                "rights_note": "公式配布元の最新利用条件を提出前に確認する",
+                "local_path": local_path,
+                "local_available": bool(local_path),
+                "usage_scope": "agewec_submission",
+                "rights_status": "approved_for_agewec_submission",
             }
         )
-    warnings = []
-    if not selected:
-        warnings.append("賞テーマに一致する公式素材候補が見つからない")
-    if selected and not any(item["local_path"] for item in selected):
-        warnings.append("候補画像がローカルに未取得")
+    candidates.sort(
+        key=lambda item: (
+            not item["local_available"],
+            item["asset_id"],
+        )
+    )
+    context = state.get("review_context", {}).get(phase, {})
+    target_cut_id = context.get("target_cut_id")
+    existing = (
+        state.get("phase_results", {})
+        .get(phase, {})
+        .get("data", {})
+        .get("asset_assignments", [])
+    )
+    assignments = {
+        int(item["cut_id"]): item
+        for item in existing
+        if target_cut_id is not None
+    }
+    for index, cut in enumerate(cuts):
+        cut_id = int(cut["id"])
+        if target_cut_id is not None and cut_id != int(target_cut_id):
+            continue
+        if not candidates:
+            break
+        primary = candidates[index % len(candidates)]
+        alternative = candidates[(index + 1) % len(candidates)]
+        assignments[cut_id] = {
+            "cut_id": cut_id,
+            "primary": {
+                **primary,
+                "selection_reason": (
+                    f"{cut['location']}の{cut['visual_role']}に利用する"
+                ),
+            },
+            "alternatives": [
+                {
+                    **alternative,
+                    "selection_reason": "構図または時刻帯の代替候補",
+                }
+            ]
+            if alternative["asset_id"] != primary["asset_id"]
+            else [],
+        }
+    missing_cut_ids = sorted(
+        {int(cut["id"]) for cut in cuts} - set(assignments)
+    )
+    assignment_list = [assignments[key] for key in sorted(assignments)]
+    selected = [
+        {**item["primary"], "cut_id": item["cut_id"]}
+        for item in assignment_list
+    ]
     manifest = {
         "catalog_source": catalog.get("source"),
-        "target_genre": genre,
+        "available_candidate_count": len(candidates),
+        "asset_assignments": assignment_list,
         "selected_assets": selected,
-        "rights_check_required": True,
+        "unassigned_cut_ids": missing_cut_ids,
+        "rights_check_required": False,
+        "usage_scope": "agewec_submission",
+        "targeted_revision_cut_id": target_cut_id,
     }
     return _complete(
         state,
         phase,
-        summary=f"公式素材候補を{len(selected)}件選定し、権利確認状態を記録",
+        summary=f"{len(assignment_list)}カットへ公式素材を割当",
         data=manifest,
-        confidence=0.82 if selected else 0.55,
-        blocking_issues=[] if selected else ["利用可能な素材候補がない"],
-        warnings=warnings,
+        confidence=0.88 if not missing_cut_ids else 0.4,
+        blocking_issues=(
+            []
+            if not missing_cut_ids
+            else [f"素材未割当カット: {missing_cut_ids}"]
+        ),
+        warnings=(
+            ["一部の選定素材はローカル未取得"]
+            if any(not item.get("local_available") for item in selected)
+            else []
+        ),
     )
 
 
 def director(state: WorkflowState) -> dict[str, Any]:
     phase = "director"
     cuts = state["phase_results"]["writer_storyboard"]["data"]["cuts"]
-    assets = state["phase_results"]["asset_curator"]["data"]["selected_assets"]
-    production = state.get("config", {}).get("production", {})
-    profile_name = production.get("profile", "draft")
-    profile = production.get("profiles", {}).get(profile_name, {})
-    shot_plan = []
-    for index, cut in enumerate(cuts):
-        asset = assets[index % len(assets)] if assets else {}
-        motion = (
-            "slow cinematic push-in, subtle parallax, preserve the original "
-            "Kitakyushu cityscape, natural lights, stable architecture"
+    assignments = {
+        int(item["cut_id"]): item
+        for item in state["phase_results"]["asset_curator"]["data"].get(
+            "asset_assignments",
+            [],
         )
-        shot_plan.append(
+    }
+    camera_intent = (
+        state["phase_results"]["creative_director"]["data"]
+        .get("camera_intent", {})
+    )
+    context = state.get("review_context", {}).get(phase, {})
+    target_cut_id = context.get("target_cut_id")
+    existing = (
+        state.get("phase_results", {})
+        .get(phase, {})
+        .get("data", {})
+        .get("shots", [])
+    )
+    shot_map = {
+        int(shot["id"]): shot
+        for shot in existing
+        if target_cut_id is not None
+    }
+    for cut in cuts:
+        cut_id = int(cut["id"])
+        if target_cut_id is not None and cut_id != int(target_cut_id):
+            continue
+        assignment = assignments.get(cut_id, {})
+        asset = assignment.get("primary", {})
+        motion = "slow stable push-in with subtle parallax"
+        shot_map[cut_id] = (
             {
                 **cut,
                 "asset": asset,
@@ -265,25 +426,43 @@ def director(state: WorkflowState) -> dict[str, Any]:
                     "palette, realistic documentary cinematography."
                 ),
                 "negative_prompt": "",
-                "generation_profile": profile,
+                "camera_motion": motion,
+                "motion_intensity": "subtle",
+                "rationale": (
+                    "実在景観を維持しながら静止画へ奥行きを加えるため"
+                ),
+                "camera_intent_alignment": (
+                    camera_intent.get(
+                        "viewer_experience",
+                        "全体の安定した映像方針",
+                    )
+                ),
+                "deviation_reason": None,
             }
         )
+    shot_plan = [shot_map[key] for key in sorted(shot_map)]
+    missing = sorted(
+        {int(cut["id"]) for cut in cuts} - set(shot_map)
+    )
     plan = {
-        "profile_name": profile_name,
         "shots": shot_plan,
         "continuity_checks": [
             "deep blueとwarm amberを維持",
             "建築・地形を過度に変形させない",
             "カメラ移動は緩やかにする",
         ],
+        "targeted_revision_cut_id": target_cut_id,
+        "technical_parameters_status": "pending_support_video_creator",
     }
     return _complete(
         state,
         phase,
-        summary=f"{len(shot_plan)}カットの素材・演出・生成設定を確定",
+        summary=f"{len(shot_plan)}カットの素材・演出指示を確定",
         data=plan,
         confidence=0.85,
-        blocking_issues=[] if assets else ["演出に割り当てる素材がない"],
+        blocking_issues=(
+            [] if not missing else [f"演出未作成カット: {missing}"]
+        ),
     )
 
 
@@ -332,7 +511,11 @@ def _comfy_production(
     artifacts: list[dict[str, Any]] = []
     issues: list[str] = []
     for shot in shots:
-        if shot.get("media_strategy") != "video":
+        requires_video = (
+            shot.get("media_requirement") == "video_required"
+            or shot.get("media_strategy") == "video"
+        )
+        if not requires_video:
             source = shot.get("asset", {}).get("local_path")
             artifacts.append(
                 {
@@ -350,7 +533,12 @@ def _comfy_production(
         if not source:
             issues.append(f"cut {shot['id']}: ComfyUI入力画像がない")
             continue
-        profile = shot.get("generation_profile", {})
+        production = config.get("production", {})
+        profile_name = str(production.get("profile", "draft"))
+        profile = (
+            shot.get("generation_profile")
+            or production.get("profiles", {}).get(profile_name, {})
+        )
         try:
             result = client.generate(
                 ComfyGenerationRequest(

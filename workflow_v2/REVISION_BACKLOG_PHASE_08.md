@@ -1,5 +1,9 @@
 # Phase 08 Revision Backlog
 
+> 状態: FFmpeg映像結合とTechnical QAは実装済み。
+> 音声、字幕、BGMは素材・Provider未設定。
+> 現行仕様は[Phase 08](PHASE_08_POST_PRODUCTION.md)を参照。
+
 現在の編集計画生成だけのPost Productionを、
 承認済みカットから最終MP4を作成・検証できる工程へ変更する。
 

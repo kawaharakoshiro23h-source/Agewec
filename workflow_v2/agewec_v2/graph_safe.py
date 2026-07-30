@@ -1,4 +1,4 @@
-"""Guarded LangGraph topology with bounded autonomous loops."""
+"""Guarded LangGraph topology with bounded per-cut production loops."""
 from __future__ import annotations
 
 from typing import Callable
@@ -21,6 +21,24 @@ def _guard_name(phase: str) -> str:
     return f"guard_{phase}"
 
 
+def _add_guard(
+    graph: StateGraph,
+    phase: str,
+    function: Callable,
+) -> None:
+    graph.add_node(_guard_name(phase), make_execution_guard(phase))
+    graph.add_node(phase, function)
+    graph.add_conditional_edges(
+        _guard_name(phase),
+        guard_router,
+        {
+            "allow": phase,
+            "escalate": "execution_limit_escalation",
+            "abort": END,
+        },
+    )
+
+
 def _add_guarded_reviewed_phase(
     graph: StateGraph,
     phase: str,
@@ -29,19 +47,11 @@ def _add_guarded_reviewed_phase(
     *,
     label: str | None = None,
 ) -> None:
-    guard_name = _guard_name(phase)
+    _add_guard(graph, phase, function)
     review_name = f"review_{phase}"
-    graph.add_node(guard_name, make_execution_guard(phase))
-    graph.add_node(phase, function)
-    graph.add_node(review_name, make_review_gate(phase, label=label))
-    graph.add_conditional_edges(
-        guard_name,
-        guard_router,
-        {
-            "allow": phase,
-            "escalate": "execution_limit_escalation",
-            "abort": END,
-        },
+    graph.add_node(
+        review_name,
+        make_review_gate(phase, label=label),
     )
     graph.add_edge(phase, review_name)
     graph.add_conditional_edges(
@@ -49,25 +59,73 @@ def _add_guarded_reviewed_phase(
         review_router,
         {
             "approve": _guard_name(next_phase),
-            "retry": guard_name,
+            "retry": _guard_name(phase),
             "abort": END,
         },
     )
 
 
-def _visual_qa_router(state: SafeWorkflowState) -> str:
+def _support_review_router(state: SafeWorkflowState) -> str:
+    review_route = state.get("review_route", "abort")
+    if review_route == "approve":
+        return _guard_name("image_video_production")
+    if review_route != "retry":
+        return review_route
+    target = state.get("review_target_phase", "support_video_creator")
+    if target not in {
+        "creative_director",
+        "writer_storyboard",
+        "asset_curator",
+        "director",
+        "support_video_creator",
+    }:
+        target = "support_video_creator"
+    return _guard_name(target)
+
+
+def _cut_review_router(state: SafeWorkflowState) -> str:
+    route = state.get("review_route", "abort")
+    if route == "approve":
+        return "commit_cut_qa"
+    if route == "retry":
+        return _guard_name("cut_visual_qa")
+    return "abort"
+
+
+def _cut_commit_router(state: SafeWorkflowState) -> str:
+    route = state.get("cut_qa_route", "human_review")
+    return {
+        "next_cut": _guard_name("image_video_production"),
+        "sequence_qa": _guard_name("visual_qa"),
+        "image_video_production": _guard_name("image_video_production"),
+        "support_video_creator": _guard_name("support_video_creator"),
+        "director": _guard_name("director"),
+        "asset_curator": _guard_name("asset_curator"),
+    }.get(route, "abort")
+
+
+def _sequence_qa_router(state: SafeWorkflowState) -> str:
     review_route = state.get("review_route", "abort")
     if review_route == "retry":
         return _guard_name("visual_qa")
     if review_route != "approve":
-        return review_route
-    route = (
+        return "abort"
+    data = (
         state.get("phase_results", {})
         .get("visual_qa", {})
         .get("data", {})
-        .get("route", "post_production")
     )
+    if data.get("verdict") == "pass":
+        return _guard_name("post_production")
+    route = data.get("recommended_route", "image_video_production")
     return _guard_name(route)
+
+
+def _review_board_mode_router(state: SafeWorkflowState) -> str:
+    result = state.get("phase_results", {}).get("review_board", {})
+    if result.get("status") == "skipped":
+        return "review_final_submission"
+    return "review_review_board"
 
 
 def _review_board_router(state: SafeWorkflowState) -> str:
@@ -75,7 +133,7 @@ def _review_board_router(state: SafeWorkflowState) -> str:
     if review_route == "retry":
         return _guard_name("review_board")
     if review_route != "approve":
-        return review_route
+        return "abort"
     verdict = (
         state.get("phase_results", {})
         .get("review_board", {})
@@ -91,10 +149,17 @@ def _review_board_router(state: SafeWorkflowState) -> str:
 
 def build_graph(checkpointer=None):
     graph = StateGraph(SafeWorkflowState)
-    graph.add_node("execution_limit_escalation", execution_limit_escalation)
+    graph.add_node(
+        "execution_limit_escalation",
+        execution_limit_escalation,
+    )
     escalation_paths = {"abort": END}
     escalation_paths.update(
-        {phase: _guard_name(phase) for phase in PHASES if phase != "final_submission"}
+        {
+            phase: _guard_name(phase)
+            for phase in PHASES
+            if phase != "final_submission"
+        }
     )
     graph.add_conditional_edges(
         "execution_limit_escalation",
@@ -131,41 +196,106 @@ def build_graph(checkpointer=None):
         graph,
         "director",
         nodes.director,
-        "image_video_production",
-        label="人間確認2: 絵コンテ・素材・演出承認",
+        "support_video_creator",
+        label="Phase 05 Director Review",
     )
-    _add_guarded_reviewed_phase(
+
+    _add_guard(graph, "support_video_creator", nodes.support_video_creator)
+    graph.add_node(
+        "review_support_video_creator",
+        make_review_gate(
+            "support_video_creator",
+            label="人間確認2: 絵コンテ・素材・演出・生成条件承認",
+        ),
+    )
+    graph.add_edge(
+        "support_video_creator",
+        "review_support_video_creator",
+    )
+    graph.add_conditional_edges(
+        "review_support_video_creator",
+        _support_review_router,
+        {
+            _guard_name("creative_director"): _guard_name(
+                "creative_director"
+            ),
+            _guard_name("writer_storyboard"): _guard_name(
+                "writer_storyboard"
+            ),
+            _guard_name("asset_curator"): _guard_name("asset_curator"),
+            _guard_name("director"): _guard_name("director"),
+            _guard_name("support_video_creator"): _guard_name(
+                "support_video_creator"
+            ),
+            _guard_name("image_video_production"): _guard_name(
+                "image_video_production"
+            ),
+            "abort": END,
+        },
+    )
+
+    _add_guard(
         graph,
         "image_video_production",
         nodes.image_video_production,
-        "visual_qa",
     )
-
+    _add_guard(graph, "cut_visual_qa", nodes.cut_visual_qa)
+    graph.add_edge(
+        "image_video_production",
+        _guard_name("cut_visual_qa"),
+    )
     graph.add_node(
-        _guard_name("visual_qa"),
-        make_execution_guard("visual_qa"),
+        "review_cut_visual_qa",
+        make_review_gate(
+            "cut_visual_qa",
+            label="Phase 07A: Cut Visual QA",
+        ),
     )
-    graph.add_node("visual_qa", nodes.visual_qa)
-    graph.add_node("review_visual_qa", make_review_gate("visual_qa"))
+    graph.add_edge("cut_visual_qa", "review_cut_visual_qa")
+    graph.add_node("commit_cut_qa", nodes.commit_cut_qa)
     graph.add_conditional_edges(
-        _guard_name("visual_qa"),
-        guard_router,
+        "review_cut_visual_qa",
+        _cut_review_router,
         {
-            "allow": "visual_qa",
-            "escalate": "execution_limit_escalation",
+            "commit_cut_qa": "commit_cut_qa",
+            _guard_name("cut_visual_qa"): _guard_name("cut_visual_qa"),
             "abort": END,
         },
+    )
+    graph.add_conditional_edges(
+        "commit_cut_qa",
+        _cut_commit_router,
+        {
+            _guard_name("image_video_production"): _guard_name(
+                "image_video_production"
+            ),
+            _guard_name("support_video_creator"): _guard_name(
+                "support_video_creator"
+            ),
+            _guard_name("director"): _guard_name("director"),
+            _guard_name("asset_curator"): _guard_name("asset_curator"),
+            _guard_name("visual_qa"): _guard_name("visual_qa"),
+            "abort": END,
+        },
+    )
+
+    _add_guard(graph, "visual_qa", nodes.visual_qa)
+    graph.add_node(
+        "review_visual_qa",
+        make_review_gate(
+            "visual_qa",
+            label="Phase 07B: Sequence Readiness QA",
+        ),
     )
     graph.add_edge("visual_qa", "review_visual_qa")
     graph.add_conditional_edges(
         "review_visual_qa",
-        _visual_qa_router,
+        _sequence_qa_router,
         {
             _guard_name("visual_qa"): _guard_name("visual_qa"),
             _guard_name("image_video_production"): _guard_name(
                 "image_video_production"
             ),
-            _guard_name("asset_curator"): _guard_name("asset_curator"),
             _guard_name("post_production"): _guard_name("post_production"),
             "abort": END,
         },
@@ -177,23 +307,19 @@ def build_graph(checkpointer=None):
         nodes.post_production,
         "review_board",
     )
-
+    _add_guard(graph, "review_board", nodes.review_board)
     graph.add_node(
-        _guard_name("review_board"),
-        make_execution_guard("review_board"),
+        "review_review_board",
+        make_review_gate("review_board"),
     )
-    graph.add_node("review_board", nodes.review_board)
-    graph.add_node("review_review_board", make_review_gate("review_board"))
     graph.add_conditional_edges(
-        _guard_name("review_board"),
-        guard_router,
+        "review_board",
+        _review_board_mode_router,
         {
-            "allow": "review_board",
-            "escalate": "execution_limit_escalation",
-            "abort": END,
+            "review_review_board": "review_review_board",
+            "review_final_submission": "review_final_submission",
         },
     )
-    graph.add_edge("review_board", "review_review_board")
     graph.add_conditional_edges(
         "review_review_board",
         _review_board_router,
@@ -223,20 +349,10 @@ def build_graph(checkpointer=None):
         },
     )
 
+    _add_guard(graph, "provenance", nodes.provenance)
     graph.add_node(
-        _guard_name("provenance"),
-        make_execution_guard("provenance"),
-    )
-    graph.add_node("provenance", nodes.provenance)
-    graph.add_node("review_provenance", make_review_gate("provenance"))
-    graph.add_conditional_edges(
-        _guard_name("provenance"),
-        guard_router,
-        {
-            "allow": "provenance",
-            "escalate": "execution_limit_escalation",
-            "abort": END,
-        },
+        "review_provenance",
+        make_review_gate("provenance"),
     )
     graph.add_edge("provenance", "review_provenance")
     graph.add_conditional_edges(

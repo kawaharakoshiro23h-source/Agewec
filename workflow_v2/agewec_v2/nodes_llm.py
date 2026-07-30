@@ -7,6 +7,8 @@ remain deterministic tools.
 from __future__ import annotations
 
 import json
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,6 +27,13 @@ def _result_data(state: WorkflowState, phase: str) -> dict[str, Any]:
 
 def _feedback(state: WorkflowState, phase: str) -> str:
     return state.get("feedback", {}).get(phase, "")
+
+
+def _review_context(
+    state: WorkflowState,
+    phase: str,
+) -> dict[str, Any]:
+    return dict(state.get("review_context", {}).get(phase, {}))
 
 
 def _llm_settings(state: WorkflowState) -> LLMSettings:
@@ -118,6 +127,27 @@ def _run_role(
 
 def executive_producer(state: WorkflowState) -> dict[str, Any]:
     project = state.get("project", {})
+
+    def transform(data: dict[str, Any]) -> dict[str, Any]:
+        requested_duration = float(
+            project.get("target_duration_seconds", 30)
+        )
+        if abs(float(data["target_duration_seconds"]) - requested_duration) > 0.01:
+            raise ValueError(
+                "Executive Producer must preserve "
+                f"target_duration_seconds={requested_duration}"
+            )
+        requested_award = str(project.get("target_award", ""))
+        if requested_award and data["target_award"] != requested_award:
+            raise ValueError(
+                f"Executive Producer must preserve target_award={requested_award}"
+            )
+        return {
+            **data,
+            "target_duration_seconds": requested_duration,
+            "source_project": project,
+        }
+
     return _run_role(
         state,
         phase="executive_producer",
@@ -133,6 +163,7 @@ def executive_producer(state: WorkflowState) -> dict[str, Any]:
         },
         summary=lambda data: f"{data['deliverable']}の制作方針をLLMが定義",
         fallback=deterministic.executive_producer,
+        transform=transform,
     )
 
 
@@ -148,6 +179,14 @@ def creative_director(state: WorkflowState) -> dict[str, Any]:
             confidence=0.0,
             blocking_issues=["executive_producerの有効な出力が必要"],
         )
+    def transform(data: dict[str, Any]) -> dict[str, Any]:
+        inherited = list(brief.get("success_criteria", []))
+        if not set(inherited).issubset(set(data["success_criteria"])):
+            raise ValueError(
+                "CreativeConcept must inherit ProjectBrief success criteria"
+            )
+        return data
+
     return _run_role(
         state,
         phase="creative_director",
@@ -157,6 +196,7 @@ def creative_director(state: WorkflowState) -> dict[str, Any]:
         },
         summary=lambda data: f"コンセプト「{data['title']}」をLLMが策定",
         fallback=deterministic.creative_director,
+        transform=transform,
     )
 
 
@@ -178,12 +218,37 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
         target = float(
             state.get("project", {}).get("target_duration_seconds", 30)
         )
-        if abs(float(data["total_seconds"]) - target) > 1.0:
+        if abs(float(data["total_seconds"]) - target) > 0.25:
             raise ValueError(
                 f"storyboard duration {data['total_seconds']} "
                 f"does not match target {target}"
             )
-        return data
+        actual = sum(float(cut["seconds"]) for cut in data["cuts"])
+        if abs(actual - target) > 0.25:
+            raise ValueError(
+                f"cut duration total {actual} does not match target {target}"
+            )
+        narration_rate = float(
+            state.get("config", {})
+            .get("storyboard", {})
+            .get("max_narration_characters_per_second", 8)
+        )
+        narration_issues = []
+        for cut in data["cuts"]:
+            compact = "".join(str(cut["narration"]).split())
+            allowance = max(1, int(float(cut["seconds"]) * narration_rate))
+            if len(compact) > allowance:
+                narration_issues.append(
+                    f"cut {cut['id']}: narration {len(compact)} chars "
+                    f"exceeds {allowance}"
+                )
+        if narration_issues:
+            raise ValueError("; ".join(narration_issues))
+        return {
+            **data,
+            "total_seconds": target,
+            "duration_source": "project.target_duration_seconds",
+        }
 
     return _run_role(
         state,
@@ -203,29 +268,69 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
 
 def _asset_candidates(state: WorkflowState) -> list[dict[str, Any]]:
     award = state.get("project", {}).get("target_award", "夜景賞")
-    genre = deterministic.AWARD_GENRES.get(award)
+    target_genre = deterministic.AWARD_GENRES.get(award)
     catalog = deterministic._load_catalog()
     photos = catalog.get("photos", [])
-    if genre:
-        photos = [photo for photo in photos if genre in photo.get("genres", [])]
     candidates = []
-    for index, photo in enumerate(photos[:24], start=1):
+    for index, photo in enumerate(photos, start=1):
+        title = str(photo.get("title", ""))
+        genres = list(photo.get("genres", []))
+        local_path = deterministic._local_asset_path(
+            photo.get("image_url", "")
+        )
+        file_size = None
+        sha256 = None
+        acquired_at = None
+        if local_path:
+            path = Path(local_path)
+            stat = path.stat()
+            file_size = stat.st_size
+            acquired_at = datetime.fromtimestamp(
+                stat.st_mtime,
+                tz=timezone.utc,
+            ).isoformat()
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            sha256 = digest.hexdigest()
+        night_terms = ("夜", "ライトアップ", "イルミネーション")
+        time_of_day = (
+            "night"
+            if any(term in title for term in night_terms)
+            or "イルミネーション・夜景" in genres
+            else "day_or_unspecified"
+        )
         candidates.append(
             {
                 "asset_id": f"asset-{index:03d}",
-                "title": photo.get("title", ""),
+                "title": title,
                 "source_url": photo.get("image_url", ""),
                 "detail_url": photo.get("detail_url", ""),
-                "genres": photo.get("genres", []),
+                "genres": genres,
                 "areas": photo.get("areas", []),
-                "local_path": deterministic._local_asset_path(
-                    photo.get("image_url", "")
+                "local_path": local_path,
+                "local_available": bool(local_path),
+                "time_of_day": time_of_day,
+                "visual_roles": genres,
+                "target_award_match": (
+                    target_genre is None or target_genre in genres
                 ),
-                "rights_status": "review_required",
-                "rights_note": "公式配布元の最新利用条件を提出前に確認する",
+                "usage_scope": "agewec_submission",
+                "rights_status": "approved_for_agewec_submission",
+                "file_size_bytes": file_size,
+                "sha256": sha256,
+                "acquired_at": acquired_at,
             }
         )
-    return candidates
+    return sorted(
+        candidates,
+        key=lambda item: (
+            not item["local_available"],
+            not item["target_award_match"],
+            item["asset_id"],
+        ),
+    )
 
 
 def asset_curator(state: WorkflowState) -> dict[str, Any]:
@@ -241,44 +346,100 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
             blocking_issues=["Storyboardが必要"],
         )
     candidates = _asset_candidates(state)
+    context = _review_context(state, "asset_curator")
+    target_cut_id = context.get("target_cut_id")
+    if target_cut_id is not None:
+        target_cut_id = int(target_cut_id)
 
     def transform(data: dict[str, Any]) -> dict[str, Any]:
         candidate_map = {item["asset_id"]: item for item in candidates}
         valid_cut_ids = {int(cut["id"]) for cut in storyboard["cuts"]}
-        selected = []
+        if target_cut_id is not None and target_cut_id not in valid_cut_ids:
+            raise ValueError(f"Unknown target_cut_id: {target_cut_id}")
+        new_assignments: dict[int, dict[str, Any]] = {}
         invalid = []
         for selection in data["selections"]:
-            asset_id = selection["asset_id"]
             cut_id = int(selection["cut_id"])
-            if asset_id not in candidate_map or cut_id not in valid_cut_ids:
-                invalid.append(f"cut={cut_id}, asset={asset_id}")
+            if cut_id not in valid_cut_ids:
+                invalid.append(f"unknown cut={cut_id}")
                 continue
-            selected.append(
-                {
-                    **candidate_map[asset_id],
-                    "cut_id": cut_id,
-                    "selection_reason": selection["reason"],
-                    "rights_risk": selection["rights_risk"],
-                }
-            )
+            if target_cut_id is not None and cut_id != target_cut_id:
+                continue
+            primary = selection["primary"]
+            primary_id = primary["asset_id"]
+            if primary_id not in candidate_map:
+                invalid.append(f"cut={cut_id}, asset={primary_id}")
+                continue
+            alternatives = []
+            seen = {primary_id}
+            for alternative in selection.get("alternatives", []):
+                asset_id = alternative["asset_id"]
+                if asset_id not in candidate_map:
+                    invalid.append(f"cut={cut_id}, asset={asset_id}")
+                    continue
+                if asset_id in seen:
+                    continue
+                seen.add(asset_id)
+                alternatives.append(
+                    {
+                        **candidate_map[asset_id],
+                        "selection_reason": alternative["reason"],
+                    }
+                )
+            new_assignments[cut_id] = {
+                "cut_id": cut_id,
+                "primary": {
+                    **candidate_map[primary_id],
+                    "selection_reason": primary["reason"],
+                },
+                "alternatives": alternatives,
+            }
         if invalid:
             raise ValueError(
                 "LLM selected unknown candidate/cut IDs: " + ", ".join(invalid)
             )
-        if not selected:
-            raise ValueError("LLM selected no real asset candidates")
-        missing_cuts = sorted(
-            valid_cut_ids - {int(item["cut_id"]) for item in selected}
+        existing = (
+            _result_data(state, "asset_curator").get(
+                "asset_assignments",
+                [],
+            )
+            if target_cut_id is not None
+            else []
         )
+        merged = {
+            int(item["cut_id"]): item
+            for item in existing
+            if int(item["cut_id"]) in valid_cut_ids
+        }
+        merged.update(new_assignments)
+        missing_cuts = sorted(valid_cut_ids - set(merged))
+        if target_cut_id is not None and target_cut_id not in new_assignments:
+            raise ValueError(
+                f"Targeted retry must select an asset for cut {target_cut_id}"
+            )
+        if missing_cuts:
+            raise ValueError(
+                "Every cut requires a primary asset; missing cuts: "
+                + ", ".join(map(str, missing_cuts))
+            )
+        assignments = [merged[cut_id] for cut_id in sorted(merged)]
+        selected_assets = [
+            {
+                **assignment["primary"],
+                "cut_id": assignment["cut_id"],
+            }
+            for assignment in assignments
+        ]
         return {
-            "catalog_source": (
-                deterministic._load_catalog().get("source")
-            ),
+            "catalog_source": deterministic._load_catalog().get("source"),
             "available_candidate_count": len(candidates),
-            "selected_assets": selected,
+            "asset_assignments": assignments,
+            "selected_assets": selected_assets,
             "missing_requirements": data.get("missing_requirements", []),
-            "unassigned_cut_ids": missing_cuts,
-            "rights_check_required": True,
+            "unassigned_cut_ids": [],
+            "rights_check_required": False,
+            "usage_scope": "agewec_submission",
+            "targeted_revision_cut_id": target_cut_id,
         }
 
     return _run_role(
@@ -288,14 +449,30 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
             "project": state.get("project", {}),
             "storyboard": storyboard,
             "available_asset_candidates": candidates,
-            "selection_rule": "Use only supplied asset_id values.",
+            "selection_rule": (
+                "Assign exactly one primary asset to every requested cut. "
+                "Use only supplied asset_id values. Prefer local_available assets."
+            ),
+            "target_cut_id": target_cut_id,
+            "existing_asset_manifest": (
+                _result_data(state, "asset_curator")
+                if target_cut_id is not None
+                else {}
+            ),
         },
         summary=lambda data: (
-            f"LLMが公式素材{len(data['selected_assets'])}件を選定"
+            f"LLMが{len(data['asset_assignments'])}カットへ公式素材を割当"
         ),
         fallback=deterministic.asset_curator,
         transform=transform,
-        warnings=["素材利用条件は提出前に人間が最終確認する"],
+        warnings=(
+            ["素材カタログの一部はローカル未取得"]
+            if any(
+                not item.get("local_available")
+                for item in candidates
+            )
+            else []
+        ),
     )
 
 
@@ -313,53 +490,92 @@ def director(state: WorkflowState) -> dict[str, Any]:
             confidence=0.0,
             blocking_issues=["Concept、Storyboard、AssetSelectionが必要"],
         )
-    config = state.get("config", {})
-    production = config.get("production", {})
-    active_profile = production.get("profile", "draft")
-    profiles = production.get("profiles", {})
+    context = _review_context(state, "director")
+    target_cut_id = context.get("target_cut_id")
+    if target_cut_id is not None:
+        target_cut_id = int(target_cut_id)
 
     def transform(data: dict[str, Any]) -> dict[str, Any]:
         cut_map = {int(cut["id"]): cut for cut in storyboard["cuts"]}
-        asset_map = {
-            item["asset_id"]: item
-            for item in assets.get("selected_assets", [])
+        if target_cut_id is not None and target_cut_id not in cut_map:
+            raise ValueError(f"Unknown target_cut_id: {target_cut_id}")
+        assignment_map = {
+            int(item["cut_id"]): item
+            for item in assets.get("asset_assignments", [])
         }
-        shots = []
+        if set(assignment_map) != set(cut_map):
+            missing = sorted(set(cut_map) - set(assignment_map))
+            raise ValueError(
+                "Asset assignment is required for every cut; missing: "
+                + ", ".join(map(str, missing))
+            )
+        new_shots: dict[int, dict[str, Any]] = {}
         invalid = []
         for direction in data["shots"]:
             cut_id = int(direction["cut_id"])
             asset_id = direction["asset_id"]
-            profile_name = direction["generation_profile"]
-            if (
-                cut_id not in cut_map
-                or asset_id not in asset_map
-                or profile_name not in profiles
-            ):
+            if cut_id not in cut_map:
+                invalid.append(f"unknown cut={cut_id}")
+                continue
+            if target_cut_id is not None and cut_id != target_cut_id:
+                continue
+            assignment = assignment_map[cut_id]
+            choices = [assignment["primary"], *assignment["alternatives"]]
+            asset_map = {item["asset_id"]: item for item in choices}
+            if asset_id not in asset_map:
                 invalid.append(
-                    f"cut={cut_id}, asset={asset_id}, profile={profile_name}"
+                    f"cut={cut_id}, asset={asset_id} is not assigned to cut"
                 )
                 continue
-            shots.append(
-                {
-                    **cut_map[cut_id],
-                    "asset": asset_map[asset_id],
-                    "positive_prompt": direction["positive_prompt"],
-                    "negative_prompt": direction["negative_prompt"],
-                    "camera_motion": direction["camera_motion"],
-                    "generation_profile_name": profile_name,
-                    "generation_profile": profiles[profile_name],
-                }
-            )
+            if (
+                direction.get("deviation_reason")
+                and not direction["deviation_reason"].strip()
+            ):
+                direction["deviation_reason"] = None
+            new_shots[cut_id] = {
+                **cut_map[cut_id],
+                "asset": asset_map[asset_id],
+                "positive_prompt": direction["positive_prompt"],
+                "negative_prompt": direction["negative_prompt"],
+                "camera_motion": direction["camera_motion"],
+                "motion_intensity": direction["motion_intensity"],
+                "rationale": direction["rationale"],
+                "camera_intent_alignment": direction[
+                    "camera_intent_alignment"
+                ],
+                "deviation_reason": direction.get("deviation_reason"),
+            }
         if invalid:
             raise ValueError(
-                "Director returned invalid IDs/profiles: " + ", ".join(invalid)
+                "Director returned invalid IDs/assets: " + ", ".join(invalid)
             )
-        if len(shots) != len(cut_map):
-            raise ValueError("Director must return exactly one shot per cut")
+        existing = (
+            _result_data(state, "director").get("shots", [])
+            if target_cut_id is not None
+            else []
+        )
+        merged = {
+            int(shot["id"]): shot
+            for shot in existing
+            if int(shot["id"]) in cut_map
+        }
+        merged.update(new_shots)
+        if target_cut_id is not None and target_cut_id not in new_shots:
+            raise ValueError(
+                f"Targeted retry must return cut {target_cut_id}"
+            )
+        if set(merged) != set(cut_map):
+            missing = sorted(set(cut_map) - set(merged))
+            raise ValueError(
+                "Director must return exactly one shot per cut; missing: "
+                + ", ".join(map(str, missing))
+            )
+        shots = [merged[cut_id] for cut_id in sorted(merged)]
         return {
-            "profile_name": active_profile,
             "shots": shots,
             "continuity_checks": data["continuity_checks"],
+            "targeted_revision_cut_id": target_cut_id,
+            "technical_parameters_status": "pending_support_video_creator",
         }
 
     return _run_role(
@@ -369,12 +585,21 @@ def director(state: WorkflowState) -> dict[str, Any]:
             "project": state.get("project", {}),
             "creative_concept": concept,
             "storyboard": storyboard,
-            "asset_selection": assets,
-            "available_generation_profiles": list(profiles),
-            "preferred_generation_profile": active_profile,
+            "asset_manifest": assets,
+            "camera_intent": concept.get("camera_intent", {}),
+            "target_cut_id": target_cut_id,
+            "existing_direction_plan": (
+                _result_data(state, "director")
+                if target_cut_id is not None
+                else {}
+            ),
+            "locked_cut_rule": (
+                "When target_cut_id is supplied, return only that cut. "
+                "All other approved shots are locked."
+            ),
         },
         summary=lambda data: (
-            f"LLMが{len(data['shots'])}カットの生成・演出指示を確定"
+            f"LLMが{len(data['shots'])}カットの演出指示を確定"
         ),
         fallback=deterministic.director,
         transform=transform,

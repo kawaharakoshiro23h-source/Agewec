@@ -21,7 +21,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
 
-def _decision_from_user(payload: dict[str, Any]) -> dict[str, str]:
+def _decision_from_user(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("kind") == "execution_limit":
         print("\n[自律実行の安全上限]")
         for violation in payload.get("violations", []):
@@ -50,7 +50,32 @@ def _decision_from_user(payload: dict[str, Any]) -> dict[str, str]:
         return {"action": "abort", "feedback": ""}
     if answer == "r":
         feedback = input("  修正指示: ").strip()
-        return {"action": "retry_with_feedback", "feedback": feedback}
+        decision: dict[str, Any] = {
+            "action": "retry_with_feedback",
+            "feedback": feedback,
+        }
+        if payload.get("phase") == "executive_producer":
+            duration = input(
+                "  目標尺を変更する場合は秒数を入力（変更なしはEnter）: "
+            ).strip()
+            if duration:
+                decision["project_updates"] = {
+                    "target_duration_seconds": float(duration)
+                }
+        if payload.get("phase") == "director":
+            cut_id = input(
+                "  対象カットID（全体修正はEnter）: "
+            ).strip()
+            if cut_id:
+                decision["target_cut_id"] = int(cut_id)
+            correction_type = input(
+                "  修正種別 [direction/asset/storyboard] "
+                "（directionはEnter）: "
+            ).strip()
+            decision["correction_type"] = (
+                correction_type or "direction"
+            )
+        return decision
     return {"action": "approve", "feedback": ""}
 
 
@@ -67,6 +92,8 @@ def main() -> None:
     config = load_config(args.config)
     if args.preset:
         config["autonomy_preset"] = args.preset
+        if args.preset != "custom":
+            config["review_policies"] = {}
 
     project = dict(config.get("project", {}))
     run_id = f"run-{uuid.uuid4().hex[:10]}"
@@ -79,15 +106,26 @@ def main() -> None:
         "phase_results": {},
         "attempts": {},
         "feedback": {},
+        "review_context": {},
         "reviews": [],
         "events": [],
         "artifacts": [],
+        "production_requests": {},
+        "production_queue": [],
+        "current_cut_id": None,
+        "generated_cut_ids": [],
+        "approved_cut_ids": [],
+        "failed_cut_ids": [],
+        "cut_attempts": {},
+        "cut_results": {},
+        "production_artifacts": {},
+        "cut_qa_results": {},
         "aborted": False,
     }
     result = graph.invoke(initial, thread)
     while "__interrupt__" in result:
         payload = result["__interrupt__"][0].value
-        if args.auto:
+        if args.auto and not payload.get("require_human", False):
             if payload.get("kind") == "execution_limit":
                 print(f"[安全停止] {payload.get('label')} — {payload.get('summary')}")
                 decision = {"action": "abort", "feedback": ""}
@@ -95,6 +133,8 @@ def main() -> None:
                 print(f"[自動承認] {payload.get('label')} — {payload.get('summary')}")
                 decision = {"action": "approve", "feedback": ""}
         else:
+            if args.auto and payload.get("require_human", False):
+                print("[人間確認必須] --autoでもH3は自動承認しません。")
             decision = _decision_from_user(payload)
         result = graph.invoke(Command(resume=decision), thread)
 

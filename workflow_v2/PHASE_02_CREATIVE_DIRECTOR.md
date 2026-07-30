@@ -10,7 +10,7 @@ Executive Producerが作成・承認した`ProjectBrief`を、映像全体で統
 
 ## 修正後の確定仕様
 
-状態: `design_confirmed / implementation_pending`
+状態: `implemented`
 
 Creative Directorは具体的なカメラ移動を全カット分決めず、作品全体の
 `camera_intent`を定義する。
@@ -76,6 +76,7 @@ Executive Producerが作成した次の情報を渡す。
 {
   "objective": "制作目的",
   "target_award": "夜景賞",
+  "target_duration_seconds": 30,
   "audience": "想定視聴者",
   "deliverable": "制作する成果物",
   "constraints": [
@@ -106,7 +107,7 @@ LLMには次の内容を決定させる。
 - 一文で表す作品の方向性
 - トーン・雰囲気
 - カラーパレット
-- カメラ表現
+- 視聴体験、運動量、安定性などの`camera_intent`
 - 全カットで守る連続性
 - 音楽・音響の方向性
 - コンセプト段階の成功基準
@@ -133,8 +134,16 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
       "deep blue",
       "warm amber"
     ],
-    "camera": "ゆっくり安定したカメラ移動",
     "continuity_rule": "全編で青と琥珀色を維持する"
+  },
+  "camera_intent": {
+    "viewer_experience": "昼の活気から荘厳な夜景へ導く",
+    "energy_curve": "active_to_calm",
+    "stability": "mostly_stable",
+    "continuity": "カット間の移動方向を自然につなぐ",
+    "hard_constraints": [
+      "実在する建築と地形を維持する"
+    ]
   },
   "audio_direction": "静かに始まり、後半で広がる音楽",
   "success_criteria": [
@@ -177,7 +186,7 @@ H1「コンセプト承認」で必ず停止する。
 - コンセプトと訴求内容
 - トーン・雰囲気
 - カラーパレット
-- カメラ表現
+- `camera_intent`
 - 映像全体の一貫性
 - 音楽・音響の方向性
 - コンセプト段階の成功基準
@@ -210,11 +219,8 @@ Creative DirectorのReview Gateから、Executive Producerへ直接戻る経路�
 
 ## 現在の注意点
 
-「承認済みの制約を変更しない」という指示は役割プロンプトに含まれているが、
-現在のコードは`ProjectBrief`との意味的な完全一致までは検査していない。
-
-JSON形式と必須フィールドは自動検証する。コンセプトがProjectBriefと
-矛盾していないかは、現在はH1の人間確認でも判断する設計。
+JSON形式と必須フィールドに加え、ProjectBriefの成功基準を継承しているかを
+自動検証する。意味的な矛盾はH1でも確認する。
 
 `audio_direction`は音楽・音響の方針であり、このフェーズでは音声やBGMを
 実際には生成しない。

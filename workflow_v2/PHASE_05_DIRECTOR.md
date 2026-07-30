@@ -13,7 +13,7 @@
 
 ## 修正後の確定仕様
 
-状態: `design_confirmed / implementation_pending`
+状態: `implemented`（技術パラメータ変換はPhase 05.5で実装予定）
 
 - Directorは`positive_prompt`、`negative_prompt`、具体的な`camera_motion`、
   `motion_intensity`、`rationale`を決める。
@@ -78,7 +78,11 @@ Creative Directorが決定した次の情報を渡す。
   "scene": "皿倉山から見た壮大な北九州の夜景",
   "narration": "北九州、その輝きは夜空へ続く。",
   "seconds": 8,
-  "media_strategy": "video"
+  "media_requirement": "video_required",
+  "time_of_day": "night",
+  "visual_role": "climax",
+  "location": "皿倉山",
+  "subject": "北九州の夜景"
 }
 ```
 
@@ -89,35 +93,19 @@ Creative Directorが決定した次の情報を渡す。
 ```json
 {
   "cut_id": 4,
-  "asset_id": "asset-004",
-  "title": "皿倉山夜景05",
-  "local_path": "assets_dl/皿倉山夜景05-scaled.jpg",
-  "source_url": "画像URL",
-  "selection_reason": "最終夜景カットに適している"
+  "primary": {
+    "asset_id": "asset-004",
+    "title": "皿倉山夜景05",
+    "local_path": "assets_dl/皿倉山夜景05-scaled.jpg",
+    "source_url": "画像URL",
+    "selection_reason": "最終夜景カットに適している"
+  },
+  "alternatives": []
 }
 ```
 
-### 生成プロファイル
-
-現在は次の2種類を渡す。
-
-```yaml
-draft:
-  width: 576
-  height: 384
-  frames: 49
-  steps: 20
-  fps: 24
-
-final:
-  width: 768
-  height: 512
-  frames: 97
-  steps: 30
-  fps: 24
-```
-
-現在の推奨プロファイルは`draft`。
+生成プロファイルやComfyUIノード情報はDirectorへ渡さない。これらは
+Phase 05.5 Support Video Creatorが扱う。
 
 再実行の場合は、人間が前回入力した`review_feedback`も渡す。
 
@@ -125,14 +113,13 @@ final:
 
 1. Execution Guardがフェーズ実行回数、全体実行数、経過時間を確認する
 2. `CreativeConcept`、`Storyboard`、`AssetManifest`を取得する
-3. 使用可能な生成プロファイルを取得する
-4. Directorの役割プロンプトと入力情報をLM StudioのLLMへ渡す
-5. LLMがカット別の素材、プロンプト、カメラワークを決定する
-6. カットID、素材ID、生成プロファイルを検証する
-7. 全Storyboardカットに1つずつShotがあるか検証する
-8. Storyboard、素材、生成設定を結合したShot一覧を作る
-9. 結果とLLM実行情報をLangGraphのStateへ保存する
-10. H2 Review Gateで人間の判断を待つ
+3. Directorの役割プロンプトと入力情報をLLMへ渡す
+4. LLMがカット別の素材、プロンプト、カメラワーク、強度、理由を決定する
+5. カットIDと、そのカットへ割り当て済みの素材IDだけを使っているか検証する
+6. 全Storyboardカットに1つずつShotがあるか検証する
+7. `target_cut_id`がある場合は対象だけ更新し、他のShotをロックする
+8. 結果とLLM実行情報をLangGraphのStateへ保存する
+9. H2 Review Gateで人間の判断を待つ
 
 現在の役割プロンプトでは、北九州の実在する建築、地形、街並みを維持し、
 Image-to-Videoに適した具体的な長文プロンプトと、抑制されたカメラ移動を
@@ -153,7 +140,10 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
       "positive_prompt": "皿倉山から見た北九州の夜景。元の建築、地形、港、道路を維持し、街の光だけが穏やかに揺れる。カメラは安定した緩やかな前進を行う。",
       "negative_prompt": "distorted architecture, flickering, motion smear",
       "camera_motion": "slow stable push-in",
-      "generation_profile": "draft"
+      "motion_intensity": "subtle",
+      "rationale": "夜景の広がりを保ちながら奥行きを加えるため",
+      "camera_intent_alignment": "荘厳で安定した終盤の体験に一致",
+      "deviation_reason": null
     }
   ],
   "continuity_checks": [
@@ -164,15 +154,14 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
 }
 ```
 
-検証後はStoryboard、素材、プロファイルの実値を結合して、次のProductionへ
-渡す。
+検証後はStoryboardと素材の実値を結合する。
 
 ```json
 {
   "id": 4,
   "scene": "皿倉山から見た壮大な北九州の夜景",
   "seconds": 8,
-  "media_strategy": "video",
+  "media_requirement": "video_required",
   "asset": {
     "asset_id": "asset-004",
     "local_path": "assets_dl/皿倉山夜景05-scaled.jpg"
@@ -180,19 +169,14 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
   "positive_prompt": "生成用の具体的な指示",
   "negative_prompt": "避ける表現",
   "camera_motion": "slow stable push-in",
-  "generation_profile_name": "draft",
-  "generation_profile": {
-    "width": 576,
-    "height": 384,
-    "frames": 49,
-    "steps": 20,
-    "fps": 24
-  }
+  "motion_intensity": "subtle",
+  "rationale": "このカメラワークを選択した理由",
+  "camera_intent_alignment": "全体方針との関係",
+  "deviation_reason": null
 }
 ```
 
-Image / Video ProductionはこのShot一覧を使い、`video`カットについて
-ComfyUIへ画像、プロンプト、生成パラメータを送る。
+Phase 05.5はこのShot一覧を使い、生成バックエンド向け技術パラメータへ変換する。
 
 ## 自動検証
 
@@ -200,9 +184,9 @@ ComfyUIへ画像、プロンプト、生成パラメータを送る。
 
 - `CreativeConcept`、`Storyboard`、`AssetSelection`が存在する
 - LLMが返したカットIDがStoryboardに存在する
-- LLMが返した素材IDがAsset Curatorの選定結果に存在する
-- 指定した生成プロファイルが設定に存在する
+- LLMが返した素材IDが対象カットのPrimaryまたはAlternativeに存在する
 - Storyboardの全カットに1つずつShotがある
+- ShotのカットIDが重複していない
 
 1カットでもShotが不足している場合は`DirectionPlan`をエラーにする。
 
@@ -226,8 +210,9 @@ H2はComfyUIで時間のかかる生成を開始する直前の確認ポイン�
 - Negative Prompt
 - カット別のカメラワーク
 - 動きの強さ
+- カメラワークを選んだ理由
+- Creative Directorの`camera_intent`との関係
 - 建物や地形を維持する指示
-- `draft / final`の選択
 - 色、動き、演出の一貫性
 
 例:
@@ -238,8 +223,8 @@ Cut 4は皿倉山夜景を使い、街の光だけが静かに揺れる表現に
 Cut 4のカメラワークを選んだ理由も説明してください。
 ```
 
-修正指示を受けると、特定フィールドだけを直接編集するのではなく、
-LLMが`DirectionPlan`全体を再生成する。
+`target_cut_id`付きの修正では、そのカットだけをLLMへ再生成させ、
+承認済みの他カットを固定する。対象IDがない場合は全体を再生成する。
 
 ### 現在、修正指示だけでは変更できないもの
 
@@ -251,29 +236,23 @@ LLMが`DirectionPlan`全体を再生成する。
 - 現在Schemaにない詳細なサンプラー設定
 - Review Policyや実行上限などのシステム設定
 
-DirectorのReview GateからCreative DirectorやAsset Curatorへ直接戻る経路は、
-現在は実装されていない。
+H2では`correction_type`に応じ、`asset`はAsset Curator、
+`storyboard`はWriter / Storyboard、`concept`はCreative Director、
+`direction`はDirectorへ戻す。
 
 ## 現在の注意点
 
-- カメラワークを選んだ理由は現在の出力Schemaにない
-- Creative Directorの方針との関係を明示する項目がない
 - CreativeConceptとの意味的な矛盾をコードで検証していない
-- Asset Curatorの複数素材を`primary / alternative`として扱えない
-- 素材が本当に対象カット用に選ばれたかを厳密に検証していない
 - ローカル画像の存在確認は次のProductionで行う
 - プロンプトの長さや品質を自動評価していない
-- `generated_image`向け画像生成は未実装
 - 一度に実生成する動画は現在最大1カット
-
-これらは全フェーズの仕様確認後にまとめて修正する。
 
 ## エラー時
 
 `CreativeConcept`、`Storyboard`、`AssetSelection`のいずれかが存在しない場合は
 実行せず、結果を`error`としてH2 Review Gateへ渡す。
 
-存在しないカットID、素材ID、生成プロファイルをLLMが返した場合は
+存在しないカットIDや、そのカットへ未割当の素材IDをLLMが返した場合は
 JSON変換を失敗させ、LLMへ修正を依頼する。
 
 全カット分のShotがない場合もエラーにする。

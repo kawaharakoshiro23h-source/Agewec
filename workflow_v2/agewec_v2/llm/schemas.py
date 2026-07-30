@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 class ProjectBrief(BaseModel):
     objective: str
     target_award: str
+    target_duration_seconds: float = Field(gt=0)
     audience: str
     deliverable: str
     constraints: list[str] = Field(min_length=1)
@@ -17,8 +18,15 @@ class ProjectBrief(BaseModel):
 
 class VisualLanguage(BaseModel):
     palette: list[str] = Field(min_length=1)
-    camera: str
     continuity_rule: str
+
+
+class CameraIntent(BaseModel):
+    viewer_experience: str
+    energy_curve: str
+    stability: str
+    continuity: str
+    hard_constraints: list[str] = Field(min_length=1)
 
 
 class CreativeConcept(BaseModel):
@@ -26,6 +34,7 @@ class CreativeConcept(BaseModel):
     logline: str
     tone: list[str] = Field(min_length=1)
     visual_language: VisualLanguage
+    camera_intent: CameraIntent
     audio_direction: str
     success_criteria: list[str] = Field(min_length=1)
 
@@ -36,7 +45,15 @@ class StoryboardCut(BaseModel):
     scene: str
     narration: str
     seconds: float = Field(gt=0)
-    media_strategy: Literal["still", "video", "generated_image"]
+    media_requirement: Literal[
+        "video_required",
+        "still_allowed",
+        "still_preferred",
+    ]
+    time_of_day: str
+    visual_role: str
+    location: str
+    subject: str
 
 
 class Storyboard(BaseModel):
@@ -56,16 +73,36 @@ class Storyboard(BaseModel):
         return self
 
 
-class AssetSelectionItem(BaseModel):
-    cut_id: int = Field(gt=0)
+class AssetChoice(BaseModel):
     asset_id: str
     reason: str
-    rights_risk: Literal["low", "medium", "high", "unknown"]
+
+
+class AssetSelectionItem(BaseModel):
+    cut_id: int = Field(gt=0)
+    primary: AssetChoice
+    alternatives: list[AssetChoice] = Field(default_factory=list)
 
 
 class AssetSelection(BaseModel):
-    selections: list[AssetSelectionItem]
+    selections: list[AssetSelectionItem] = Field(min_length=1)
     missing_requirements: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_assignments(self) -> "AssetSelection":
+        cut_ids = [item.cut_id for item in self.selections]
+        if len(cut_ids) != len(set(cut_ids)):
+            raise ValueError("asset selections must have unique cut ids")
+        for item in self.selections:
+            ids = [
+                item.primary.asset_id,
+                *(choice.asset_id for choice in item.alternatives),
+            ]
+            if len(ids) != len(set(ids)):
+                raise ValueError(
+                    f"cut {item.cut_id} contains duplicate asset ids"
+                )
+        return self
 
 
 class DirectionShot(BaseModel):
@@ -74,12 +111,22 @@ class DirectionShot(BaseModel):
     positive_prompt: str
     negative_prompt: str = ""
     camera_motion: str
-    generation_profile: str
+    motion_intensity: Literal["subtle", "moderate", "strong"]
+    rationale: str
+    camera_intent_alignment: str
+    deviation_reason: str | None = None
 
 
 class DirectionPlan(BaseModel):
     shots: list[DirectionShot] = Field(min_length=1)
     continuity_checks: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_shots(self) -> "DirectionPlan":
+        cut_ids = [shot.cut_id for shot in self.shots]
+        if len(cut_ids) != len(set(cut_ids)):
+            raise ValueError("direction shots must have unique cut ids")
+        return self
 
 
 class VisualQACutResult(BaseModel):

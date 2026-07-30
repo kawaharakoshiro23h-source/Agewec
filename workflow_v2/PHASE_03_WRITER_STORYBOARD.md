@@ -10,11 +10,11 @@
 
 ## 修正後の確定仕様
 
-状態: `design_confirmed / implementation_pending`
+状態: `implemented`
 
 - Phase 01の`target_duration_seconds`をカットへ配分し、合計尺を必ず一致させる。
 - カット順と秒数はこの工程で確定し、Phase 08は独自判断で増減しない。
-- 現在の`media_strategy`は、次の`media_requirement`へ置き換える。
+- `media_requirement`を次の3値で使用する。
 
 ```text
 video_required   : 最終提出では動画クリップが必須
@@ -101,16 +101,14 @@ Creative Directorが作成した次の情報を渡す。
 - 画面に必要な場面
 - ナレーション文
 - カット秒数
-- メディア方式
+- `media_requirement`
+- 時刻帯、映像上の役割、場所、被写体
 
-メディア方式は次の3種類。
+`media_requirement`は次の3種類。
 
-- `still`: 既存静止画を使用する
-- `video`: 既存画像から動画を生成する
-- `generated_image`: 新しい画像を生成する想定
-
-`generated_image`は出力形式として存在するが、実際の画像生成処理はまだ
-実装されていない。
+- `video_required`: 最終成果物で動画クリップが必須
+- `still_allowed`: 意図的な静止画を許可
+- `still_preferred`: 演出上、静止画を優先
 
 LLM出力の内部修正試行は、現在は初回を含め最大3回。
 
@@ -123,9 +121,10 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
 - カットIDが正の整数
 - カットIDが重複していない
 - 各カットの秒数合計と`total_seconds`の差が0.25秒以内
-- `total_seconds`とプロジェクト目標尺の差が1秒以内
+- `total_seconds`とプロジェクト目標尺の差が0.25秒以内
+- ナレーション文字数が設定された秒数内の上限に収まる
 
-目標尺が30秒の場合、Storyboard全体はおおむね29〜31秒である必要がある。
+目標尺が30秒の場合、Storyboard全体とカット合計は30秒へ一致させる。
 
 ## 次のステップへ渡す情報
 
@@ -141,7 +140,11 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
       "scene": "昼の街と人々の活動を映す",
       "narration": "海と山に抱かれた、動き続ける街。",
       "seconds": 6,
-      "media_strategy": "still"
+      "media_requirement": "video_required",
+      "time_of_day": "day",
+      "visual_role": "opening",
+      "location": "小倉",
+      "subject": "街と人"
     },
     {
       "id": 2,
@@ -149,7 +152,11 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
       "scene": "夕景から街の灯りがともる様子へ移る",
       "narration": "やがて街は、光の表情を見せ始める。",
       "seconds": 6,
-      "media_strategy": "video"
+      "media_requirement": "video_required",
+      "time_of_day": "sunset",
+      "visual_role": "transition",
+      "location": "北九州市街",
+      "subject": "夕景と街明かり"
     },
     {
       "id": 3,
@@ -157,7 +164,11 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
       "scene": "皿倉山から見た壮大な北九州の夜景",
       "narration": "北九州、その輝きは夜空へ続く。",
       "seconds": 8,
-      "media_strategy": "video"
+      "media_requirement": "video_required",
+      "time_of_day": "night",
+      "visual_role": "climax",
+      "location": "皿倉山",
+      "subject": "北九州の夜景"
     }
   ]
 }
@@ -177,7 +188,7 @@ LLM出力の内部修正試行は、現在は初回を含め最大3回。
 - エラー・警告
 
 Asset CuratorはこのStoryboardを受け取り、各カットの`scene`と
-`media_strategy`に合う具体的な素材を選定する。
+構造化された素材要件に合う具体的な素材を選定する。
 
 ## 人間確認
 
@@ -197,7 +208,7 @@ Review Gateで必ず停止する。
 - 各カットで必要な場面
 - ナレーション
 - 各カットの秒数配分
-- `still`と`video`の使い分け
+- `media_requirement`の変更
 - 全体のテンポ
 - 物語の展開
 
@@ -231,14 +242,8 @@ Executive Producerへ直接戻る経路も現在は実装されていない。
 ## 現在の注意点
 
 - カット数の最大値はまだ定義されていない
-- ナレーションが指定秒数内で実際に読めるかは検証していない
 - ナレーション音声は生成しない
-- `generated_image`を指定できるが画像生成処理は未実装
-- 昼・夕方・夜などの素材属性は現在`scene`の文章内で表現する
 - 具体的な素材は次のAsset Curatorで選定する
-
-今後はカットごとに`time_of_day`、`visual_role`、`location`などの
-構造化された素材要件を追加する候補がある。
 
 ## エラー時
 
