@@ -65,11 +65,10 @@ class Storyboard(BaseModel):
         ids = [cut.id for cut in self.cuts]
         if len(ids) != len(set(ids)):
             raise ValueError("cut ids must be unique")
-        actual = sum(cut.seconds for cut in self.cuts)
-        if abs(actual - self.total_seconds) > 0.25:
-            raise ValueError(
-                f"total_seconds={self.total_seconds} does not match cuts={actual}"
-            )
+        # 尺合計と目標尺の整合は、プロジェクト設定を参照できる
+        # writer_storyboardノード側で検証・小差補正する。Schema段階で
+        # 拒否すると、1秒程度の単純な足し算誤差もLLM再試行になり、
+        # 修復応答が壊れたJSONになるリスクが高いため。
         return self
 
 
@@ -102,6 +101,22 @@ class AssetSelection(BaseModel):
                 raise ValueError(
                     f"cut {item.cut_id} contains duplicate asset ids"
                 )
+        return self
+
+
+class AssetRationaleItem(BaseModel):
+    cut_id: int = Field(gt=0)
+    reason: str = Field(min_length=1)
+
+
+class AssetRationale(BaseModel):
+    rationales: list[AssetRationaleItem] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_cut_ids(self) -> "AssetRationale":
+        cut_ids = [item.cut_id for item in self.rationales]
+        if len(cut_ids) != len(set(cut_ids)):
+            raise ValueError("asset rationales must have unique cut ids")
         return self
 
 
@@ -187,6 +202,7 @@ ROLE_SCHEMAS: dict[str, type[BaseModel]] = {
     "creative_director": CreativeConcept,
     "writer_storyboard": Storyboard,
     "asset_curator": AssetSelection,
+    "asset_curator_rationale": AssetRationale,
     "director": DirectionPlan,
     "visual_qa": VisualQAResult,
     "post_production": EditPlan,

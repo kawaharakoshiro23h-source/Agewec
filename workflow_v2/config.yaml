@@ -27,6 +27,9 @@ review:
 
 storyboard:
   max_narration_characters_per_second: 8
+  duration_large_adjustment_warning_seconds: 2.0
+  narration_language: ja
+  auto_normalize_narration: true
   final_default_media_requirement: video_required
 
 assets:
@@ -34,6 +37,7 @@ assets:
   prefer_local: true
   usage_scope: agewec_submission
   auto_download_missing: false
+  alternatives_per_cut: 2
 
 execution_limits:
   max_retries_per_phase: 2
@@ -49,6 +53,9 @@ execution_limits:
   on_limit: human_review
   max_generation_attempts_per_cut: 2
   max_total_production_attempts: 20
+
+llm:
+  enabled: false
 
 production:
   backend: mock

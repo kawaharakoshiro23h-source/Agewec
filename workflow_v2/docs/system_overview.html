@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AGEWEC 自律制作システム 概要</title>
+<style>
+:root{
+  --navy:#203864; --ink:#1f2733; --sub:#5b6570; --line:#e2e6ec;
+  --bg:#f6f8fb; --card:#ffffff; --accent:#185fa5; --accentbg:#e8f1fb;
+  --human:#8a5a00; --humanbg:#fdf3e0; --gate:#4a4a8a; --gatebg:#eeeefb;
+  --out:#0f6e56; --outbg:#e3f5ee;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased;}
+.wrap{max-width:960px;margin:0 auto;padding:32px 24px 60px;}
+header{border-bottom:3px solid var(--navy);padding-bottom:16px;margin-bottom:8px;}
+h1{font-size:24px;margin:0 0 4px;color:var(--navy);font-weight:700;}
+.lead{color:var(--sub);font-size:14px;margin:0;}
+h2{font-size:16px;color:var(--navy);margin:32px 0 12px;border-left:5px solid var(--navy);padding-left:10px;}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--sub);margin:12px 0 4px;}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;}
+.tag.human{color:var(--human);background:var(--humanbg);}
+.tag.gate{color:var(--gate);background:var(--gatebg);}
+.tag.out{color:var(--out);background:var(--outbg);}
+.flow{display:flex;flex-direction:column;gap:0;margin:8px 0;}
+.arrow{align-self:center;color:#aab3bf;font-size:16px;line-height:1;margin:6px 0;}
+.node{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px;box-shadow:0 1px 2px rgba(20,40,80,.04);}
+.node .hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
+.num{width:26px;height:26px;border-radius:50%;background:var(--navy);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;}
+.name{font-weight:700;font-size:15px;color:var(--navy);}
+.role{font-size:12px;color:var(--sub);}
+.grid{display:grid;grid-template-columns:76px 1fr;gap:4px 12px;font-size:13px;}
+.k{color:var(--accent);font-weight:600;}
+.v{color:var(--ink);}
+.v code{background:#f0f3f7;border-radius:4px;padding:1px 5px;font-size:12px;
+  font-family:ui-monospace,Menlo,monospace;color:#2b3a4a;}
+.note{background:#fff;border:1px dashed var(--line);border-radius:10px;padding:12px 14px;
+  font-size:13px;color:var(--sub);margin-top:6px;}
+.pill{display:inline-block;font-size:11px;color:#fff;background:var(--gate);
+  border-radius:6px;padding:2px 7px;margin-left:4px;}
+footer{margin-top:28px;font-size:12px;color:#9aa4b0;text-align:center;}
+@media print{body{background:#fff;}.node{box-shadow:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>AGEWEC 2026 — AIエージェント自律制作システム 概要</h1>
+  <p class="lead">生成AI・AIエージェントが「企画 → 台本 → 素材選定 → 演出 → 動画生成 → 品質検査 → 編集 → 審査 → 証跡」までを自律実行する、北九州観光プロモーション動画の制作パイプライン。各工程はLLM/決定論処理で構成され、すべての工程の後段に「レビューゲート（自動 or 人間承認）」を持つ。</p>
+</header>
+
+<div class="legend">
+  <span><span class="tag human">人間確認</span> 重要マイルストーン（H1/H2/H3）で人が承認・修正指示</span>
+  <span><span class="tag gate">Review Gate</span> 全ノード後段。always / on_exception / never を切替</span>
+  <span><span class="tag out">出力形式</span> 次工程へ渡す構造化データ（JSON）</span>
+</div>
+
+<h2>全体ワークフロー</h2>
+<div class="flow">
+
+  <div class="node">
+    <div class="hd"><span class="num">1</span><span class="name">Executive Producer</span><span class="role">制作要件の定義</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">プロジェクト指定（<code>target_award</code>／<code>theme</code>／<code>target_duration_seconds</code>）、システム情報</div>
+      <div class="k">目的</div><div class="v">後続すべてが従う「制作要件書」に変換。作品全体の目標尺をここで固定する。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">ProjectBrief</span> <code>objective / target_award / audience / deliverable / constraints[] / success_criteria[]</code></div>
+      <div class="k">次へ</div><div class="v">Creative Director</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">2</span><span class="name">Creative Director</span><span class="role">コンセプト設計</span><span class="tag human">H1 コンセプト承認</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">ProjectBrief、プロジェクト指定</div>
+      <div class="k">目的</div><div class="v">「誰に何を感じてほしいか」を決め、トーン・色・映像/音の方針、全体のカメラ意図を定義。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">CreativeConcept</span> <code>title / logline / tone[] / visual_language{palette,continuity_rule} / camera_intent{...} / audio_direction</code></div>
+      <div class="k">次へ</div><div class="v">Writer / Storyboard</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">3</span><span class="name">Writer / Storyboard</span><span class="role">台本・カット構成</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">ProjectBrief、CreativeConcept</div>
+      <div class="k">目的</div><div class="v">目標尺をカットへ配分し、秒数付きの具体的な絵コンテ・ナレーションに落とす。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">Storyboard</span> <code>total_seconds / cuts[{id,name,scene,narration,seconds,media_requirement,time_of_day,visual_role,location,subject}]</code></div>
+      <div class="k">次へ</div><div class="v">Asset Curator</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">4</span><span class="name">Asset Curator &amp; Rights</span><span class="role">素材選定・権利</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">Storyboard、北九州パレット公式素材カタログ（time_of_day・エリア・ジャンル・ローカルパスを持つ）</div>
+      <div class="k">目的</div><div class="v">各カットに公式実写を選定。時間帯を最優先に、ローカル取得済みのみを候補化し、カット別スコアで絞り込む。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">AssetManifest</span> <code>selected_assets[{cut_id,asset_id,local_path,selection_reason}] / usage_scope / rights_status</code></div>
+      <div class="k">次へ</div><div class="v">Director</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">5</span><span class="name">Director</span><span class="role">演出設計</span><span class="tag human">H2 絵コンテ・素材・演出承認</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">CreativeConcept、Storyboard、AssetManifest、生成プロファイル</div>
+      <div class="k">目的</div><div class="v">カット別に、生成用の長いプロンプト・カメラワーク・動きの強さ・演出意図を決定（生成バックエンド非依存）。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">DirectionPlan</span> <code>shots[{cut_id,asset_id,positive_prompt,negative_prompt,camera_motion,rationale}] / continuity_checks[]</code></div>
+      <div class="k">次へ</div><div class="v">Support Video Creator</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">5.5</span><span class="name">Support Video Creator</span><span class="role">技術パラメータ変換</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">DirectionPlan、生成プロファイル、モデル制約</div>
+      <div class="k">目的</div><div class="v">演出を生成バックエンドが受け取れる形へ変換。秒数→フレーム数（8n+1制約）などを算出。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">ProductionRequest</span> <code>image / positive_prompt / negative_prompt / width / height / frames / steps / fps / seed</code></div>
+      <div class="k">次へ</div><div class="v">Image / Video Production</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">6</span><span class="name">Image / Video Production</span><span class="role">実生成（実行専任）</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">ProductionRequest、ローカル実写画像</div>
+      <div class="k">目的</div><div class="v">生成バックエンド（ローカルComfyUI+LTX／クラウドAPIに差し替え可）で、実写を起点にimage-to-video生成。LLMは使わず決定的に実行。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">動画クリップ(mp4)</span> ＋ 生成記録 <code>prompt_id / elapsed / settings</code></div>
+      <div class="k">次へ</div><div class="v">Visual QA</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">7</span><span class="name">Visual QA（Cut QA）</span><span class="role">品質検査・差し戻し</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">生成クリップ、生成記録、Storyboard、DirectionPlan</div>
+      <div class="k">目的</div><div class="v">尺・解像度・fps・フレーム数・再生可否を機械検査（＋VLMで変形/ちらつき評価）。問題の種類に応じて差し戻し先を変える。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">QA判定</span> <code>verdict(pass/revise/replace_asset) / route / issues[] / cut_results[]</code></div>
+      <div class="k">次へ</div><div class="v">合格→Post Production／不合格→Production・Asset・Directorへ差し戻し</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">8</span><span class="name">Post Production</span><span class="role">編集・結合</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">承認済みクリップ群、Storyboard（順序・秒数）</div>
+      <div class="k">目的</div><div class="v">解像度/fpsを正規化→カット順に結合→字幕・（音声/BGM）→尺検査。FFmpegで最終MP4を出力。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">final_video.mp4</span> ＋ <code>EditPlan / technical_qa(pass)</code></div>
+      <div class="k">次へ</div><div class="v">Review Board</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">9</span><span class="name">Review Board</span><span class="role">総合審査</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">全工程のEvidence（Brief〜完成動画）</div>
+      <div class="k">目的</div><div class="v">観光訴求・物語一貫性・技術完成度などをRubricで採点し、提出水準に達したかを総合判断。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">審査結果</span> <code>rubric_scores / average / verdict(pass/revise) / recommendations[]</code></div>
+      <div class="k">次へ</div><div class="v">合格→H3／要改善→Post Productionへ</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node" style="border-color:#d9b877;background:var(--humanbg);">
+    <div class="hd"><span class="num" style="background:var(--human);">H3</span><span class="name" style="color:var(--human);">最終提出承認（人間）</span></div>
+    <div class="grid">
+      <div class="k">目的</div><div class="v">完成動画と証跡を人が最終確認し、提出可否を判断（完全自動でも勝手に提出しない安全設計）。</div>
+      <div class="k">次へ</div><div class="v">承認→Provenance／要修正→Post Production</div>
+    </div>
+  </div>
+  <div class="arrow">▼</div>
+
+  <div class="node">
+    <div class="hd"><span class="num">10</span><span class="name">Provenance &amp; Submission</span><span class="role">証跡・提出パッケージ</span></div>
+    <div class="grid">
+      <div class="k">入力</div><div class="v">全実行State（各工程の入出力・判断・修正履歴）</div>
+      <div class="k">目的</div><div class="v">実行ごとの提出パッケージを生成。誰が何を提案し、AI/人が何を判断し、どの修正が採用されたかを追跡可能にする。</div>
+      <div class="k">出力</div><div class="v"><span class="tag out">submissions/&lt;run_id&gt;/</span> <code>final_video.mp4 / provenance.json / process_report / decision_log / manifest</code></div>
+      <div class="k">次へ</div><div class="v">提出</div>
+    </div>
+  </div>
+
+</div>
+
+<h2>全工程を貫く仕組み</h2>
+<div class="note">
+  <b>Review Gate</b>（各ノード後段）… <code>always</code>（毎回人が承認）／<code>on_exception</code>（失敗・低信頼・上限到達時のみ）／<code>never</code>（自動通過）をノード単位で選択。プリセット <code>manual / supervised / autonomous</code> で一括切替も可能。<br>
+  <b>人間確認（H1/H2/H3）</b>… コンセプト・絵コンテ/素材/演出・最終提出、の3マイルストーンで人が承認・プロンプト修正・差し戻し。<br>
+  <b>Execution Guard</b>… フェーズ別リトライ上限・総実行数・実行時間の上限を持ち、無限ループを防止。上限到達時は安全停止して人へエスカレーション。<br>
+  <b>バックエンド差し替え</b>… 生成部（Image/Video Production）は共通インターフェースで、ローカルComfyUI(LTX)↔クラウドAPI を設定変更のみで切替可能。<br>
+  <b>Provenance</b>… 各工程の判断理由・使用モデル・生成設定・修正履歴を構造化して保存＝再現性を担保。
+</div>
+
+<footer>AGEWEC 2026 応募作品 — AIエージェント自律制作システム 概要図（制作進行中）</footer>
+</div>
+</body>
+</html>

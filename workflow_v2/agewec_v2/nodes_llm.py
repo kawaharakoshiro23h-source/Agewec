@@ -6,8 +6,10 @@ remain deterministic tools.
 """
 from __future__ import annotations
 
+import copy
 import json
 import hashlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -179,13 +181,27 @@ def creative_director(state: WorkflowState) -> dict[str, Any]:
             confidence=0.0,
             blocking_issues=["executive_producerの有効な出力が必要"],
         )
+
     def transform(data: dict[str, Any]) -> dict[str, Any]:
-        inherited = list(brief.get("success_criteria", []))
-        if not set(inherited).issubset(set(data["success_criteria"])):
-            raise ValueError(
-                "CreativeConcept must inherit ProjectBrief success criteria"
-            )
-        return data
+        # ProjectBriefの成功基準は、LLMによる転記や言い換えに依存させない。
+        # 上流基準を先頭に固定し、Creative Director独自の追加基準だけを
+        # 後ろへ残すことで、契約を確実に継承しつつ創造的な追加を許可する。
+        inherited = [
+            str(item).strip()
+            for item in brief.get("success_criteria", [])
+            if str(item).strip()
+        ]
+        proposed = [
+            str(item).strip()
+            for item in data.get("success_criteria", [])
+            if str(item).strip()
+        ]
+        merged = list(dict.fromkeys([*inherited, *proposed]))
+        return {
+            **data,
+            "success_criteria": merged,
+            "inherited_success_criteria": inherited,
+        }
 
     return _run_role(
         state,
@@ -198,6 +214,137 @@ def creative_director(state: WorkflowState) -> dict[str, Any]:
         fallback=deterministic.creative_director,
         transform=transform,
     )
+
+
+_JAPANESE_CHARACTER = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+_ASCII_LETTER = re.compile(r"[A-Za-z]")
+
+
+def _fallback_japanese_narration(cut: dict[str, Any]) -> str:
+    role = str(cut.get("visual_role", "")).lower()
+    time_of_day = str(cut.get("time_of_day", "")).lower()
+    if role in {"opening", "intro", "introduction"}:
+        return "北九州の物語が、ここから始まります。"
+    if role in {"climax", "finale"} or time_of_day in {
+        "night",
+        "evening",
+        "blue_hour",
+    }:
+        return "光に包まれた北九州が、夜空に輝きます。"
+    if role in {"ending", "closing", "final"}:
+        return "心に残る北九州へ、訪れてみませんか。"
+    return "街の営みが、北九州の魅力をつないでいます。"
+
+
+def _fit_japanese_narration(text: str, allowance: int) -> str:
+    compact = "".join(str(text).split())
+    if len(compact) <= allowance:
+        return compact
+    if allowance <= 1:
+        return compact[:allowance]
+    body_limit = allowance - 1
+    candidate = compact[:body_limit]
+    # 十分な長さの句点があれば、文の途中ではなくそこで切る。
+    punctuation = max(
+        candidate.rfind("。"),
+        candidate.rfind("！"),
+        candidate.rfind("？"),
+    )
+    if punctuation >= max(1, body_limit // 2):
+        return candidate[: punctuation + 1]
+    return candidate.rstrip("、。！？") + "。"
+
+
+def _normalize_japanese_narration(
+    cut: dict[str, Any],
+    *,
+    allowance: int,
+) -> tuple[str, list[str]]:
+    original = "".join(str(cut.get("narration", "")).split())
+    reasons: list[str] = []
+    normalized = original
+    if (
+        not _JAPANESE_CHARACTER.search(original)
+        or _ASCII_LETTER.search(original)
+    ):
+        normalized = _fallback_japanese_narration(cut)
+        reasons.append("non_japanese_replaced")
+    fitted = _fit_japanese_narration(normalized, allowance)
+    if fitted != normalized:
+        reasons.append("duration_fit_shortened")
+    return fitted, reasons
+
+
+def _rescale_cut_durations(
+    cuts: list[dict[str, Any]],
+    *,
+    target_seconds: float,
+    warning_threshold_seconds: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Proportionally force positive cut durations to the exact target."""
+    normalized = [dict(cut) for cut in cuts]
+    original_total = sum(float(cut["seconds"]) for cut in normalized)
+    if original_total <= 0:
+        raise ValueError("cut duration total must be greater than zero")
+    factor = target_seconds / original_total
+    original_values = [float(cut["seconds"]) for cut in normalized]
+    adjusted_values = [
+        round(value * factor, 6)
+        for value in original_values
+    ]
+    # The final cut absorbs floating-point rounding only.  The creative timing
+    # change itself is distributed proportionally across every cut.
+    rounding_delta = round(
+        target_seconds - sum(adjusted_values),
+        6,
+    )
+    adjusted_values[-1] = round(
+        adjusted_values[-1] + rounding_delta,
+        6,
+    )
+    if any(value <= 0 for value in adjusted_values):
+        raise ValueError(
+            "proportional duration correction produced a non-positive cut"
+        )
+    changes = []
+    for cut, original, adjusted in zip(
+        normalized,
+        original_values,
+        adjusted_values,
+    ):
+        cut["seconds"] = adjusted
+        changes.append(
+            {
+                "cut_id": int(cut["id"]),
+                "original_seconds": original,
+                "adjusted_seconds": adjusted,
+                "delta_seconds": round(adjusted - original, 6),
+            }
+        )
+    total_delta = round(target_seconds - original_total, 6)
+    applied = abs(total_delta) > 0.001
+    return normalized, {
+        "applied": applied,
+        "method": (
+            "proportional_scale"
+            if applied
+            else "none"
+        ),
+        "target_seconds": target_seconds,
+        "original_cut_total_seconds": original_total,
+        "adjusted_cut_total_seconds": round(
+            sum(float(cut["seconds"]) for cut in normalized),
+            6,
+        ),
+        "total_delta_seconds": total_delta,
+        "scale_factor": round(factor, 8),
+        "rounding_delta_seconds": rounding_delta,
+        "large_adjustment_warning": (
+            abs(total_delta) > warning_threshold_seconds
+        ),
+        "warning_threshold_seconds": warning_threshold_seconds,
+        "cut_changes": changes,
+    }
 
 
 def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
@@ -218,25 +365,68 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
         target = float(
             state.get("project", {}).get("target_duration_seconds", 30)
         )
-        if abs(float(data["total_seconds"]) - target) > 0.25:
-            raise ValueError(
-                f"storyboard duration {data['total_seconds']} "
-                f"does not match target {target}"
+        reported_total = float(data["total_seconds"])
+        storyboard_config = (
+            state.get("config", {}).get("storyboard", {})
+        )
+        warning_threshold = float(
+            storyboard_config.get(
+                "duration_large_adjustment_warning_seconds",
+                storyboard_config.get(
+                    "duration_auto_adjust_tolerance_seconds",
+                    2.0,
+                ),
             )
-        actual = sum(float(cut["seconds"]) for cut in data["cuts"])
-        if abs(actual - target) > 0.25:
-            raise ValueError(
-                f"cut duration total {actual} does not match target {target}"
-            )
+        )
+        cuts, duration_adjustment = _rescale_cut_durations(
+            data["cuts"],
+            target_seconds=target,
+            warning_threshold_seconds=warning_threshold,
+        )
+        duration_adjustment.update(
+            {
+                "reported_total_seconds": reported_total,
+                "reported_total_delta_seconds": round(
+                    target - reported_total,
+                    6,
+                ),
+            }
+        )
         narration_rate = float(
-            state.get("config", {})
-            .get("storyboard", {})
-            .get("max_narration_characters_per_second", 8)
+            storyboard_config.get(
+                "max_narration_characters_per_second",
+                8,
+            )
+        )
+        narration_language = str(
+            storyboard_config.get("narration_language", "ja")
+        ).lower()
+        auto_normalize = bool(
+            storyboard_config.get("auto_normalize_narration", True)
         )
         narration_issues = []
-        for cut in data["cuts"]:
-            compact = "".join(str(cut["narration"]).split())
+        narration_adjustments: list[dict[str, Any]] = []
+        for cut in cuts:
+            original = str(cut["narration"])
             allowance = max(1, int(float(cut["seconds"]) * narration_rate))
+            if narration_language == "ja" and auto_normalize:
+                normalized, reasons = _normalize_japanese_narration(
+                    cut,
+                    allowance=allowance,
+                )
+                cut["narration"] = normalized
+                if reasons:
+                    narration_adjustments.append(
+                        {
+                            "cut_id": int(cut["id"]),
+                            "reasons": reasons,
+                            "original": original,
+                            "normalized": normalized,
+                            "allowance_characters": allowance,
+                        }
+                    )
+                continue
+            compact = "".join(original.split())
             if len(compact) > allowance:
                 narration_issues.append(
                     f"cut {cut['id']}: narration {len(compact)} chars "
@@ -246,8 +436,12 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
             raise ValueError("; ".join(narration_issues))
         return {
             **data,
+            "cuts": cuts,
             "total_seconds": target,
             "duration_source": "project.target_duration_seconds",
+            "duration_adjustment": duration_adjustment,
+            "narration_language": narration_language,
+            "narration_adjustments": narration_adjustments,
         }
 
     return _run_role(
@@ -275,9 +469,7 @@ def _asset_candidates(state: WorkflowState) -> list[dict[str, Any]]:
     for index, photo in enumerate(photos, start=1):
         title = str(photo.get("title", ""))
         genres = list(photo.get("genres", []))
-        local_path = deterministic._local_asset_path(
-            photo.get("image_url", "")
-        )
+        local_path = deterministic._local_asset_path(photo)
         file_size = None
         sha256 = None
         acquired_at = None
@@ -333,12 +525,209 @@ def _asset_candidates(state: WorkflowState) -> list[dict[str, Any]]:
     )
 
 
+_CLIMAX_ROLES = {"climax", "ending", "final", "finale", "closing"}
+
+
+def _tod_eval(cut_tod: str, cand_tod: str) -> tuple[bool, int]:
+    """time_of_day の相性（最優先シグナル）。(除外するか, 加点) を返す。
+
+    完全一致→優先 / dusk↔day,night→許容 / day↔night→原則除外 / unspecified→減点残し。
+    候補側は 'night' か 'day_or_unspecified' の2値。
+    """
+    cand_night = cand_tod == "night"
+    if cut_tod == "day":
+        return (True, 0) if cand_night else (False, 4)      # day↔night 除外
+    if cut_tod == "night":
+        return (False, 6) if cand_night else (False, -2)    # 不一致は減点して残す
+    if cut_tod == "dusk":
+        return (False, 2)                                    # 昼夜どちらも許容
+    return (False, 0)                                        # unspecified
+
+
+def _location_score(cut_location: str, areas: list[str]) -> int:
+    if not cut_location:
+        return 0
+    for area in areas:
+        base = area.replace("エリア", "")
+        for seg in base.split("・") + [base]:
+            if seg and (seg in cut_location or cut_location in seg):
+                return 3
+    return 0
+
+
+def _subject_score(cut: dict[str, Any], title: str) -> int:
+    text = f"{cut.get('subject', '')}{cut.get('name', '')}"
+    grams = {text[i:i + 2] for i in range(len(text) - 1)}
+    return 1 if any(g in title for g in grams) else 0
+
+
+def _shortlist_candidates(cuts: list[dict[str, Any]],
+                          candidates: list[dict[str, Any]],
+                          award: str, per_cut: int = 8) -> list[dict[str, Any]]:
+    """285件を「カット別スコア付きユニオン」へ絞る。
+
+    local_available をハードフィルタ、time_of_day を最優先に採点し、各カット上位
+    per_cut 件を統合。候補には eligible_cut_ids / scores_by_cut を付与する。
+    """
+    local = [c for c in candidates if c.get("local_available")]  # ハードフィルタ
+    award_genre = deterministic.AWARD_GENRES.get(award)
+    result: dict[str, dict[str, Any]] = {}
+
+    for cut in cuts:
+        cut_id = int(cut["id"])
+        cut_tod = str(cut.get("time_of_day", "unspecified"))
+        cut_loc = str(cut.get("location", ""))
+        role = str(cut.get("visual_role", ""))
+
+        scored, relaxed = [], []
+        for c in local:
+            excluded, s = _tod_eval(cut_tod, c.get("time_of_day", "day_or_unspecified"))
+            s += _location_score(cut_loc, c.get("areas", []))
+            if award_genre and award_genre in c.get("genres", []):
+                s += 3 if role in _CLIMAX_ROLES else 1  # 賞ジャンルはclimaxで強く
+            s += _subject_score(cut, c.get("title", ""))
+            relaxed.append((s, c))
+            if not excluded:
+                scored.append((s, c))
+        pool = scored or relaxed  # 除外で枯れたら緩和して残す
+        pool.sort(key=lambda x: (-x[0], x[1]["asset_id"]))
+
+        # 多様性キャップ: 同一エリア先頭 / タイトル接頭辞は各2件まで
+        picked, area_ct, pref_ct = [], {}, {}
+        for score, c in pool:
+            area_key = (c.get("areas") or ["-"])[0]
+            pref = c.get("title", "")[:4]
+            if area_ct.get(area_key, 0) >= 2 or pref_ct.get(pref, 0) >= 2:
+                continue
+            picked.append((score, c))
+            area_ct[area_key] = area_ct.get(area_key, 0) + 1
+            pref_ct[pref] = pref_ct.get(pref, 0) + 1
+            if len(picked) >= per_cut:
+                break
+        if len(picked) < per_cut:  # キャップで足りなければ補充
+            have = {c["asset_id"] for _, c in picked}
+            for score, c in pool:
+                if c["asset_id"] in have:
+                    continue
+                picked.append((score, c))
+                if len(picked) >= per_cut:
+                    break
+
+        for score, c in picked:
+            r = result.setdefault(
+                c["asset_id"],
+                {**c, "eligible_cut_ids": [], "scores_by_cut": {}},
+            )
+            r["eligible_cut_ids"].append(cut_id)
+            r["scores_by_cut"][str(cut_id)] = int(score)
+
+    return list(result.values())
+
+
+def _compact_asset_candidates_for_llm(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return only fields needed for semantic selection.
+
+    Provenance fields such as URLs, hashes, file sizes, acquisition timestamps,
+    and absolute local paths stay in the full local candidate map.  They are
+    restored after the LLM returns asset IDs, so they never consume context.
+    """
+    fields = (
+        "asset_id",
+        "title",
+        "genres",
+        "areas",
+        "time_of_day",
+        "visual_roles",
+        "target_award_match",
+        "eligible_cut_ids",
+        "scores_by_cut",
+    )
+    return [
+        {
+            field: candidate.get(field)
+            for field in fields
+        }
+        for candidate in candidates
+    ]
+
+
+def _canonical_asset_id(value: Any) -> str:
+    """Normalize harmless zero-padding variations in LLM asset IDs."""
+    raw = str(value).strip()
+    match = re.fullmatch(r"asset-(\d+)", raw, flags=re.IGNORECASE)
+    if not match:
+        return raw
+    return f"asset-{int(match.group(1)):03d}"
+
+
+def _ranked_candidates_for_cut(
+    candidates: list[dict[str, Any]],
+    cut_id: int,
+) -> list[dict[str, Any]]:
+    return sorted(
+        (
+            candidate
+            for candidate in candidates
+            if cut_id
+            in {
+                int(value)
+                for value in candidate.get("eligible_cut_ids", [])
+            }
+        ),
+        key=lambda candidate: (
+            -int(
+                candidate.get("scores_by_cut", {}).get(
+                    str(cut_id),
+                    -10_000,
+                )
+            ),
+            not bool(candidate.get("target_award_match")),
+            str(candidate.get("asset_id", "")),
+        ),
+    )
+
+
+def _code_asset_reason(
+    cut: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    source: str,
+) -> str:
+    score = candidate.get("scores_by_cut", {}).get(
+        str(int(cut["id"])),
+        "n/a",
+    )
+    if source == "explicit_feedback":
+        return (
+            f"人間の明示指定により{candidate.get('title', '')}を採用。"
+            f"対象カットの事前適合スコアは{score}。"
+        )
+    if source == "retry_next_candidate":
+        return (
+            f"前候補への修正指示を受け、次点の"
+            f"{candidate.get('title', '')}を採用（スコア{score}）。"
+        )
+    return (
+        f"{cut.get('time_of_day', '')}・{cut.get('location', '')}・"
+        f"{cut.get('visual_role', '')}の条件に対する事前採点で"
+        f"{candidate.get('title', '')}が上位（スコア{score}）。"
+    )
+
+
+def _requested_asset_id(feedback: str) -> str | None:
+    match = re.search(r"asset-\d+", feedback, flags=re.IGNORECASE)
+    return _canonical_asset_id(match.group(0)) if match else None
+
+
 def asset_curator(state: WorkflowState) -> dict[str, Any]:
+    phase = "asset_curator"
     storyboard = _result_data(state, "writer_storyboard")
     if not storyboard:
         return deterministic._complete(
             state,
-            "asset_curator",
+            phase,
             summary="絵コンテがないため素材選定不可",
             data={},
             status="error",
@@ -346,133 +735,319 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
             blocking_issues=["Storyboardが必要"],
         )
     candidates = _asset_candidates(state)
+    award = state.get("project", {}).get("target_award", "夜景賞")
+    per_cut = int(
+        state.get("config", {}).get("assets", {}).get("shortlist_per_cut", 8)
+    )
+    candidates = _shortlist_candidates(
+        storyboard["cuts"], candidates, award, per_cut
+    )
     context = _review_context(state, "asset_curator")
     target_cut_id = context.get("target_cut_id")
     if target_cut_id is not None:
         target_cut_id = int(target_cut_id)
-
-    def transform(data: dict[str, Any]) -> dict[str, Any]:
-        candidate_map = {item["asset_id"]: item for item in candidates}
-        valid_cut_ids = {int(cut["id"]) for cut in storyboard["cuts"]}
-        if target_cut_id is not None and target_cut_id not in valid_cut_ids:
-            raise ValueError(f"Unknown target_cut_id: {target_cut_id}")
-        new_assignments: dict[int, dict[str, Any]] = {}
-        invalid = []
-        for selection in data["selections"]:
-            cut_id = int(selection["cut_id"])
-            if cut_id not in valid_cut_ids:
-                invalid.append(f"unknown cut={cut_id}")
-                continue
-            if target_cut_id is not None and cut_id != target_cut_id:
-                continue
-            primary = selection["primary"]
-            primary_id = primary["asset_id"]
-            if primary_id not in candidate_map:
-                invalid.append(f"cut={cut_id}, asset={primary_id}")
-                continue
-            alternatives = []
-            seen = {primary_id}
-            for alternative in selection.get("alternatives", []):
-                asset_id = alternative["asset_id"]
-                if asset_id not in candidate_map:
-                    invalid.append(f"cut={cut_id}, asset={asset_id}")
-                    continue
-                if asset_id in seen:
-                    continue
-                seen.add(asset_id)
-                alternatives.append(
-                    {
-                        **candidate_map[asset_id],
-                        "selection_reason": alternative["reason"],
-                    }
-                )
-            new_assignments[cut_id] = {
-                "cut_id": cut_id,
-                "primary": {
-                    **candidate_map[primary_id],
-                    "selection_reason": primary["reason"],
-                },
-                "alternatives": alternatives,
-            }
-        if invalid:
-            raise ValueError(
-                "LLM selected unknown candidate/cut IDs: " + ", ".join(invalid)
-            )
-        existing = (
-            _result_data(state, "asset_curator").get(
-                "asset_assignments",
-                [],
-            )
-            if target_cut_id is not None
-            else []
+    cut_map = {
+        int(cut["id"]): cut
+        for cut in storyboard.get("cuts", [])
+    }
+    valid_cut_ids = set(cut_map)
+    if target_cut_id is not None and target_cut_id not in valid_cut_ids:
+        return deterministic._complete(
+            state,
+            phase,
+            summary="対象カットIDが存在しないため素材変更不可",
+            data={},
+            status="error",
+            confidence=0.0,
+            blocking_issues=[f"Unknown target_cut_id: {target_cut_id}"],
         )
-        merged = {
-            int(item["cut_id"]): item
-            for item in existing
-            if int(item["cut_id"]) in valid_cut_ids
-        }
-        merged.update(new_assignments)
-        missing_cuts = sorted(valid_cut_ids - set(merged))
-        if target_cut_id is not None and target_cut_id not in new_assignments:
-            raise ValueError(
-                f"Targeted retry must select an asset for cut {target_cut_id}"
+
+    existing_items = (
+        _result_data(state, phase).get("asset_assignments", [])
+        if target_cut_id is not None
+        else []
+    )
+    merged = {
+        int(item["cut_id"]): copy.deepcopy(item)
+        for item in existing_items
+        if int(item["cut_id"]) in valid_cut_ids
+    }
+    feedback = _feedback(state, phase)
+    requested_id = _requested_asset_id(feedback)
+    if requested_id and target_cut_id is None:
+        return deterministic._complete(
+            state,
+            phase,
+            summary="素材IDの明示変更には対象カットIDが必要",
+            data={
+                "selection_mode": "deterministic_ranker",
+                "requested_asset_id": requested_id,
+            },
+            status="error",
+            confidence=0.0,
+            blocking_issues=[
+                f"{requested_id}を指定する場合はtarget_cut_idも指定してください"
+            ],
+        )
+    alternatives_per_cut = int(
+        state.get("config", {})
+        .get("assets", {})
+        .get("alternatives_per_cut", 2)
+    )
+    selected_ids = {
+        str(item.get("primary", {}).get("asset_id", ""))
+        for cut_id, item in merged.items()
+        if cut_id != target_cut_id
+    }
+    selection_cut_ids = (
+        [target_cut_id]
+        if target_cut_id is not None
+        else sorted(valid_cut_ids)
+    )
+    new_assignments: dict[int, dict[str, Any]] = {}
+    blocking: list[str] = []
+    warnings: list[str] = []
+    for cut_id in selection_cut_ids:
+        cut = cut_map[cut_id]
+        ranked = _ranked_candidates_for_cut(candidates, cut_id)
+        if not ranked:
+            blocking.append(
+                f"cut {cut_id}: eligibleなローカル素材候補が0件"
             )
-        if missing_cuts:
-            raise ValueError(
-                "Every cut requires a primary asset; missing cuts: "
-                + ", ".join(map(str, missing_cuts))
+            continue
+        source = "deterministic_ranker"
+        previous_id = str(
+            merged.get(cut_id, {}).get("primary", {}).get(
+                "asset_id",
+                "",
             )
-        assignments = [merged[cut_id] for cut_id in sorted(merged)]
-        selected_assets = [
-            {
-                **assignment["primary"],
-                "cut_id": assignment["cut_id"],
-            }
-            for assignment in assignments
-        ]
-        return {
-            "catalog_source": deterministic._load_catalog().get("source"),
-            "available_candidate_count": len(candidates),
-            "asset_assignments": assignments,
-            "selected_assets": selected_assets,
-            "missing_requirements": data.get("missing_requirements", []),
-            "unassigned_cut_ids": [],
-            "rights_check_required": False,
-            "usage_scope": "agewec_submission",
-            "targeted_revision_cut_id": target_cut_id,
+        )
+        if requested_id:
+            requested = next(
+                (
+                    candidate
+                    for candidate in ranked
+                    if candidate["asset_id"] == requested_id
+                ),
+                None,
+            )
+            if requested is None:
+                blocking.append(
+                    f"cut {cut_id}: 指定素材{requested_id}は"
+                    "このカットのeligible候補ではありません"
+                )
+                continue
+            primary = requested
+            source = "explicit_feedback"
+        elif target_cut_id is not None and previous_id:
+            next_candidates = [
+                candidate
+                for candidate in ranked
+                if candidate["asset_id"] != previous_id
+            ]
+            if next_candidates:
+                primary = next_candidates[0]
+                source = "retry_next_candidate"
+            else:
+                primary = ranked[0]
+                warnings.append(
+                    f"cut {cut_id}: 次点候補がないため同一素材を維持"
+                )
+        else:
+            unused = [
+                candidate
+                for candidate in ranked
+                if candidate["asset_id"] not in selected_ids
+            ]
+            primary = (unused or ranked)[0]
+        selected_ids.add(primary["asset_id"])
+        alternatives = [
+            candidate
+            for candidate in ranked
+            if candidate["asset_id"] != primary["asset_id"]
+        ][: max(0, alternatives_per_cut)]
+        new_assignments[cut_id] = {
+            "cut_id": cut_id,
+            "primary": {
+                **primary,
+                "selection_reason": _code_asset_reason(
+                    cut,
+                    primary,
+                    source=source,
+                ),
+                "selection_reason_source": "deterministic",
+                "llm_rationale": _code_asset_reason(
+                    cut,
+                    primary,
+                    source=source,
+                ),
+                "rationale_source": "deterministic_fallback",
+                "selection_source": source,
+            },
+            "alternatives": [
+                {
+                    **candidate,
+                    "selection_reason": (
+                        f"コード採点による次点候補"
+                        f"（スコア"
+                        f"{candidate.get('scores_by_cut', {}).get(str(cut_id))}）"
+                    ),
+                    "selection_reason_source": "deterministic",
+                }
+                for candidate in alternatives
+            ],
         }
 
-    return _run_role(
-        state,
-        phase="asset_curator",
-        upstream={
-            "project": state.get("project", {}),
-            "storyboard": storyboard,
-            "available_asset_candidates": candidates,
-            "selection_rule": (
-                "Assign exactly one primary asset to every requested cut. "
-                "Use only supplied asset_id values. Prefer local_available assets."
-            ),
-            "target_cut_id": target_cut_id,
-            "existing_asset_manifest": (
-                _result_data(state, "asset_curator")
-                if target_cut_id is not None
-                else {}
-            ),
-        },
-        summary=lambda data: (
-            f"LLMが{len(data['asset_assignments'])}カットへ公式素材を割当"
-        ),
-        fallback=deterministic.asset_curator,
-        transform=transform,
-        warnings=(
-            ["素材カタログの一部はローカル未取得"]
-            if any(
-                not item.get("local_available")
-                for item in candidates
+    if blocking:
+        return deterministic._complete(
+            state,
+            phase,
+            summary="決定論的素材選定で解決不能な条件を検出",
+            data={
+                "selection_mode": "deterministic_ranker",
+                "targeted_revision_cut_id": target_cut_id,
+            },
+            status="error",
+            confidence=0.0,
+            blocking_issues=blocking,
+            warnings=warnings,
+        )
+
+    rationale_metadata: dict[str, Any] = {
+        "decision_owner": "deterministic_ranker",
+        "role": "asset_curator_rationale",
+        "fallback": True,
+        "reason": "LLM disabled",
+    }
+    rationale_map: dict[int, str] = {}
+    try:
+        settings = _llm_settings(state)
+        if settings.enabled:
+            rationale_input = [
+                {
+                    "cut": cut_map[cut_id],
+                    "selected_asset": _compact_asset_candidates_for_llm(
+                        [assignment["primary"]]
+                    )[0],
+                    "deterministic_reason": assignment["primary"][
+                        "selection_reason"
+                    ],
+                }
+                for cut_id, assignment in sorted(new_assignments.items())
+            ]
+            run = RoleRunner(state.get("config", {})).run(
+                role="asset_curator_rationale",
+                upstream={
+                    "project": state.get("project", {}),
+                    "final_selections": rationale_input,
+                    "instruction": (
+                        "IDs are immutable. Explain only the supplied decisions."
+                    ),
+                },
+                feedback=feedback,
             )
-            else []
+            valid_reason_ids = set(new_assignments)
+            rationale_map = {
+                int(item["cut_id"]): str(item["reason"]).strip()
+                for item in run.output.model_dump(mode="json")[
+                    "rationales"
+                ]
+                if int(item["cut_id"]) in valid_reason_ids
+                and str(item["reason"]).strip()
+            }
+            rationale_metadata = {
+                **run.metadata,
+                "decision_owner": "deterministic_ranker",
+                "role": "asset_curator_rationale",
+                "fallback": len(rationale_map) != len(new_assignments),
+            }
+            if len(rationale_map) != len(new_assignments):
+                warnings.append(
+                    "LLM理由が一部不足したためコード生成理由を使用"
+                )
+    except Exception as exc:
+        rationale_metadata = {
+            "provider": (
+                settings.provider
+                if "settings" in locals()
+                else "unknown"
+            ),
+            "model": (
+                settings.model
+                if "settings" in locals()
+                else ""
+            ),
+            "decision_owner": "deterministic_ranker",
+            "role": "asset_curator_rationale",
+            "fallback": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        warnings.append(
+            "LLM理由生成に失敗したためコード生成理由で続行: "
+            f"{type(exc).__name__}"
+        )
+
+    for cut_id, reason in rationale_map.items():
+        new_assignments[cut_id]["primary"]["llm_rationale"] = reason
+        new_assignments[cut_id]["primary"]["rationale_source"] = "llm"
+    merged.update(new_assignments)
+    missing_cuts = sorted(valid_cut_ids - set(merged))
+    if missing_cuts:
+        return deterministic._complete(
+            state,
+            phase,
+            summary="全カットへPrimary素材を割り当てられない",
+            data={},
+            status="error",
+            confidence=0.0,
+            blocking_issues=[
+                "Primary素材がないカット: "
+                + ", ".join(map(str, missing_cuts))
+            ],
+        )
+    assignments = [merged[cut_id] for cut_id in sorted(merged)]
+    selected_assets = [
+        {
+            **assignment["primary"],
+            "cut_id": assignment["cut_id"],
+        }
+        for assignment in assignments
+    ]
+    data = {
+        "catalog_source": deterministic._load_catalog().get("source"),
+        "available_candidate_count": len(candidates),
+        "asset_assignments": assignments,
+        "selected_assets": selected_assets,
+        "missing_requirements": [],
+        "unassigned_cut_ids": [],
+        "rights_check_required": False,
+        "usage_scope": "agewec_submission",
+        "selection_mode": "deterministic_ranker_with_llm_rationale",
+        "targeted_revision_cut_id": target_cut_id,
+        "requested_asset_id": requested_id,
+        "rationale_fallback_used": bool(
+            rationale_metadata.get("fallback")
         ),
+    }
+    update = deterministic._complete(
+        state,
+        phase,
+        summary=(
+            f"コードが{len(assignments)}カットへ公式素材を確定し、"
+            + (
+                "LLMが理由を説明"
+                if not rationale_metadata.get("fallback")
+                else "コード理由で継続"
+            )
+        ),
+        data=data,
+        confidence=0.98,
+        warnings=warnings,
+    )
+    return _with_llm_metadata(
+        update,
+        phase,
+        rationale_metadata,
     )
 
 
@@ -513,7 +1088,8 @@ def director(state: WorkflowState) -> dict[str, Any]:
         invalid = []
         for direction in data["shots"]:
             cut_id = int(direction["cut_id"])
-            asset_id = direction["asset_id"]
+            raw_asset_id = direction["asset_id"]
+            asset_id = _canonical_asset_id(raw_asset_id)
             if cut_id not in cut_map:
                 invalid.append(f"unknown cut={cut_id}")
                 continue
@@ -524,7 +1100,8 @@ def director(state: WorkflowState) -> dict[str, Any]:
             asset_map = {item["asset_id"]: item for item in choices}
             if asset_id not in asset_map:
                 invalid.append(
-                    f"cut={cut_id}, asset={asset_id} is not assigned to cut"
+                    f"cut={cut_id}, asset={raw_asset_id} "
+                    f"(normalized={asset_id}) is not assigned to cut"
                 )
                 continue
             if (

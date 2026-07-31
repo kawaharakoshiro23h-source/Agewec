@@ -1,7 +1,7 @@
 # Phase 09 Revision Backlog
 
 > 状態: `ai / human_only`切替、H3強制人間確認、技術QA連動を実装済み。
-> 現行仕様は[Phase 09](PHASE_09_REVIEW_BOARD.md)を参照。
+> 現行仕様は[Phase 09](../phases/PHASE_09_REVIEW_BOARD.md)を参照。
 
 完成動画をEvidence付きで総合評価できるReview Boardを実装しつつ、
 締切時にはAI審査を安全にスキップして人間が最終判断できる構成へ変更する。

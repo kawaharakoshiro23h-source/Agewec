@@ -47,6 +47,12 @@ class LLMSettings:
     structured_output_mode: str
     strict_mode: bool
     token_parameter: str
+    cost_guard_enabled: bool
+    cost_limit_usd: float
+    cost_ledger_path: Path
+    pricing_model: str
+    input_cost_per_million_usd: float
+    output_cost_per_million_usd: float
 
     @classmethod
     def from_sources(cls, workflow_config: dict[str, Any]) -> "LLMSettings":
@@ -84,10 +90,30 @@ class LLMSettings:
             "LLM_MODEL",
             default=str(llm.get("model", "")),
         )
-        enabled = _env_bool(
-            "AGEWEC_LLM_ENABLED",
-            bool(llm.get("enabled", False)),
+        # An explicitly safe config (`llm.enabled: false`) must remain local
+        # even when the project .env contains cloud credentials.  Other configs
+        # may still be disabled or enabled through the environment.
+        enabled = (
+            False
+            if llm.get("enabled") is False
+            else _env_bool(
+                "AGEWEC_LLM_ENABLED",
+                bool(llm.get("enabled", False)),
+            )
         )
+        cost_guard = llm.get("cost_guard", {})
+        ledger_value = _env(
+            "AGEWEC_LLM_COST_LEDGER_PATH",
+            default=str(
+                cost_guard.get(
+                    "ledger_path",
+                    "work/llm_cost_ledger.json",
+                )
+            ),
+        )
+        ledger_path = Path(ledger_value).expanduser()
+        if not ledger_path.is_absolute():
+            ledger_path = WORKFLOW_ROOT / ledger_path
         settings = cls(
             enabled=enabled,
             provider=provider,
@@ -117,6 +143,43 @@ class LLMSettings:
             token_parameter=_env(
                 "AGEWEC_LLM_TOKEN_PARAMETER",
                 default=str(llm.get("token_parameter", default_token_parameter)),
+            ),
+            cost_guard_enabled=_env_bool(
+                "AGEWEC_LLM_COST_GUARD_ENABLED",
+                bool(cost_guard.get("enabled", True)),
+            ),
+            cost_limit_usd=float(
+                _env(
+                    "AGEWEC_LLM_COST_LIMIT_USD",
+                    default=str(cost_guard.get("limit_usd", 5.0)),
+                )
+            ),
+            cost_ledger_path=ledger_path,
+            pricing_model=_env(
+                "AGEWEC_LLM_PRICING_MODEL",
+                default=str(cost_guard.get("pricing_model", "gpt-4o-mini")),
+            ),
+            input_cost_per_million_usd=float(
+                _env(
+                    "AGEWEC_LLM_INPUT_COST_PER_MILLION_USD",
+                    default=str(
+                        cost_guard.get(
+                            "input_cost_per_million_usd",
+                            0.15,
+                        )
+                    ),
+                )
+            ),
+            output_cost_per_million_usd=float(
+                _env(
+                    "AGEWEC_LLM_OUTPUT_COST_PER_MILLION_USD",
+                    default=str(
+                        cost_guard.get(
+                            "output_cost_per_million_usd",
+                            0.60,
+                        )
+                    ),
+                )
             ),
         )
         settings.validate()
@@ -156,3 +219,22 @@ class LLMSettings:
             raise ValueError(
                 "token_parameter must be max_tokens or max_completion_tokens"
             )
+        if self.provider == "openai" and self.cost_guard_enabled:
+            if self.cost_limit_usd <= 0:
+                raise ValueError("LLM cost limit must be greater than zero")
+            if (
+                self.input_cost_per_million_usd < 0
+                or self.output_cost_per_million_usd < 0
+            ):
+                raise ValueError("LLM token prices cannot be negative")
+            if not self.pricing_model:
+                raise ValueError("LLM pricing_model is required")
+            if not (
+                self.model == self.pricing_model
+                or self.model.startswith(f"{self.pricing_model}-")
+            ):
+                raise ValueError(
+                    "Cost guard pricing does not match the active model: "
+                    f"model={self.model}, pricing_model={self.pricing_model}. "
+                    "Configure matching token prices before using this model."
+                )

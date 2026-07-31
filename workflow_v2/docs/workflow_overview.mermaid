@@ -1,0 +1,16 @@
+flowchart TD
+    P["Executive Producer"] --> C["Creative Director"]
+    C --> H1{"人間確認 1<br/>コンセプト承認"}
+    H1 --> W["Writer / Storyboard"]
+    W --> A["Asset Curator & Rights"]
+    A --> D["Director"]
+    D --> H2{"人間確認 2<br/>絵コンテ・素材・演出承認"}
+    H2 --> I["Image / Video Production"]
+    I --> VQ{"Visual QA"}
+    VQ -->|"映像破綻"| I
+    VQ -->|"素材不適合"| A
+    VQ -->|"OK"| POST["Post Production"]
+    POST --> R{"Review Board"}
+    R -->|"修正"| POST
+    R -->|"合格"| H3{"人間確認 3<br/>最終提出承認"}
+    H3 --> PROV["Provenance・提出資料"]

@@ -84,6 +84,29 @@ class WorkflowV2Test(unittest.TestCase):
                 (submission_dir / name).exists(),
                 msg=f"missing submission artifact: {name}",
             )
+        process_html = (
+            submission_dir / "process_report.html"
+        ).read_text(encoding="utf-8")
+        process_markdown = (
+            submission_dir / "process_report.md"
+        ).read_text(encoding="utf-8")
+        for expected in (
+            "全体ワークフロー",
+            "何のためのノードか",
+            "入力元:",
+            "この実行で生成・判断された内容",
+            "承認・修正履歴",
+            "修正ループ",
+            "Executive Producer",
+            "Support Video Creator",
+        ):
+            self.assertIn(expected, process_html)
+        self.assertIn(
+            "ノードごとの入出力と実行結果",
+            process_markdown,
+        )
+        self.assertIn("出力形式:", process_markdown)
+        self.assertNotIn("base_url", process_html)
         self.assertEqual(len(result["reviews"]), 16)
 
     def test_h3_interrupt_is_mandatory_even_in_autonomous_mode(self) -> None:

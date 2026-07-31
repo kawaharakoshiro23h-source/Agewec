@@ -1,7 +1,7 @@
 # Phase 06 Revision Backlog
 
 > 状態: 主要項目は実装済み。以下は設計検討時の履歴として保持する。
-> 現行仕様は[Phase 06](PHASE_06_IMAGE_VIDEO_PRODUCTION.md)を参照。
+> 現行仕様は[Phase 06](../phases/PHASE_06_IMAGE_VIDEO_PRODUCTION.md)を参照。
 
 Phase 05 DirectorからPhase 07 Visual QAまでを、生成基盤に依存しない設計と
 カット単位の安全な生成・修正ループへ変更する。

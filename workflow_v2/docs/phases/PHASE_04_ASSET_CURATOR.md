@@ -24,20 +24,21 @@ AGEWEC公式素材カタログ内の画像はAGEWEC提出用途で使用可能�
 - カタログには時刻帯、用途、場所、被写体、ローカルパス、取得日時、ファイルサイズ、ハッシュを保存する。
 - ローカルファイル欠損時だけ、許可された公式URLから再取得するフォールバックを使う。
 
-詳細は[Phase 04の修正案](./REVISION_BACKLOG_PHASE_04.md)を参照する。
+詳細は[Phase 04の修正案](../revisions/REVISION_BACKLOG_PHASE_04.md)を参照する。
 
 ## 処理フロー
 
 ```mermaid
 flowchart LR
     G["Execution Guard"] --> S["Storyboardを取得"]
-    S --> C["素材候補を抽出"]
-    C --> L["Asset Curator LLM"]
-    L --> V{"カットID・素材ID検証"}
-    V -->|"不正"| L
-    V -->|"正常"| Z{"全カットに1件以上ある?"}
-    Z -->|"ない"| L
-    Z -->|"ある"| D{"ローカルにある?"}
+    S --> C["ローカル素材をコードで採点"]
+    C --> K["カット別上位候補を確定"]
+    K --> Z{"全カットに1件以上ある?"}
+    Z -->|"ない"| B["Blocking Issue"]
+    Z -->|"ある"| L["LLMが選定理由だけを説明"]
+    L -->|"API・JSON・Schema失敗"| F["コード根拠を理由として使用"]
+    L -->|"成功"| D{"ローカルにある?"}
+    F --> D
     D -->|"ある"| M["Asset Manifestを保存"]
     D -->|"ない"| DL["将来: 自動ダウンロード"]
     DL --> M
@@ -79,7 +80,7 @@ Writer / Storyboardが作成した各カットの次の情報を渡す。
 
 ### 素材候補
 
-`asset_catalog.json`から候補を作成し、LLMへ次のメタデータを渡す。
+`asset_catalog.json`から候補を作成し、コードで次のメタデータを採点する。
 
 ```json
 {
@@ -102,8 +103,10 @@ Writer / Storyboardが作成した各カットの次の情報を渡す。
 }
 ```
 
-LLMには画像データそのものではなく、現在はタイトル、ジャンル、地域などの
-メタデータを渡して選定させる。
+素材選択はLLMへ委ねない。コードが`local_available`を必須条件にし、
+`time_of_day`、場所、visual role、賞ジャンル、被写体キーワードを使って
+カット別に順位付けする。その後、確定したカットと写真だけをLLMへ渡し、
+選定理由を日本語で説明させる。
 
 再実行の場合は、人間が前回入力した`review_feedback`も渡す。
 
@@ -111,18 +114,20 @@ LLMには画像データそのものではなく、現在はタイトル、ジ�
 
 1. Execution Guardがフェーズ実行回数、全体実行数、経過時間を確認する
 2. 承認済みStoryboardを取得する
-3. 素材カタログから候補を抽出する
-4. Storyboardと素材候補をAsset Curator LLMへ渡す
-5. LLMが各カットの`primary`と`alternatives`を返す
-6. 存在するカットIDと素材IDだけが使われているか検証する
-7. 選定結果と素材情報を結合してAsset Manifestを作成する
-8. 結果とLLM実行情報をLangGraphのStateへ保存する
-9. Review Gateで人間の判断を待つ
+3. ローカルに存在する公式素材だけを候補にする
+4. カット別適合スコアをコードで計算し、上位候補を順位付けする
+5. コードが各カットの`primary`と`alternatives`を確定する
+6. 確定したカット・素材・スコア根拠だけをLLMへ渡す
+7. LLMは選定を変更せず、日本語の理由だけを返す
+8. LLMのAPI、JSON、Schema検証が失敗した場合はコード生成理由で続行する
+9. 選定結果と素材情報を結合してAsset Manifestを作成する
+10. 結果とLLM実行情報をLangGraphのStateへ保存する
+11. Review Gateで人間の判断を待つ
 
-LLMは入力として渡された`asset_id`だけを選択できる。存在しない写真、
-URL、タイトルを新しく作ってはならない。
-
-LLM出力の内部修正試行は、現在は初回を含め最大3回。
+LLMの理由がSchema上は正常でも内容が不適切な場合を自動判定する機能はない。
+そのため`selection_reason`には常にコードの採点根拠を保持し、LLMの説明は
+`llm_rationale`として別に記録する。これにより、説明品質が低くても選択根拠を
+失わない。
 
 ## カットと素材の関係
 
@@ -162,7 +167,10 @@ flowchart LR
         "asset_id": "asset-012",
         "title": "昼の門司港レトロ",
         "local_path": "assets_dl/mojiko-day.jpg",
-        "selection_reason": "昼の活動を表すカットに適している"
+        "selection_reason": "day・門司港・openingのコード採点で上位",
+        "selection_reason_source": "deterministic",
+        "llm_rationale": "昼の門司港を導入として自然に提示できるため採用した。",
+        "rationale_source": "llm"
       },
       "alternatives": [
         {
@@ -230,7 +238,10 @@ Cut 4のメイン素材は皿倉山からの夜景にしてください。
 ```
 
 `target_cut_id`を付けた修正指示では対象カットだけを再選定し、他の
-承認済み割当は固定する。IDを付けない場合は全体を再選定する。
+承認済み割当は固定する。素材IDを指定しなければ次点候補へ切り替え、
+`asset-042`のようにIDを明示すれば、その素材が対象カットのeligible候補で
+あることを確認して採用する。素材IDを指定する場合、誤適用防止のため
+`target_cut_id`も必須。
 
 ### 現在、修正指示だけでは変更できないもの
 
@@ -247,9 +258,8 @@ Asset CuratorのReview GateからWriterへ直接戻る経路も、現在は実�
 
 ## 現在の注意点
 
-- 未ダウンロード素材をLLMが選ぶ可能性がある
 - 不足素材の自動ダウンロードは未実装
-- LLMは実画像ではなくメタデータを中心に選定している
+- コードは実画像の画素内容ではなく、カタログのメタデータで採点している
 - 全公式素材のローカル事前取得は別タスク
 
 ## エラー時

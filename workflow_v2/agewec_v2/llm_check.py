@@ -8,6 +8,7 @@ import httpx
 import yaml
 
 from .llm.config import LLMSettings
+from .llm.cost_guard import LLMCostGuard
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,27 @@ def main() -> None:
     print("base_url:", settings.base_url)
     print("model:", settings.model)
     print("api_key_configured:", bool(settings.api_key))
+    print("cost_guard_enabled:", settings.cost_guard_enabled)
+    if settings.provider == "openai" and settings.cost_guard_enabled:
+        guard = LLMCostGuard(
+            ledger_path=settings.cost_ledger_path,
+            limit_usd=settings.cost_limit_usd,
+            pricing_model=settings.pricing_model,
+            input_cost_per_million_usd=(
+                settings.input_cost_per_million_usd
+            ),
+            output_cost_per_million_usd=(
+                settings.output_cost_per_million_usd
+            ),
+        )
+        budget = guard.snapshot()
+        print("cost_ledger:", settings.cost_ledger_path)
+        print("cost_spent_usd:", budget["spent_usd"])
+        print(
+            "cost_remaining_usd:",
+            budget["remaining_budget_usd"],
+        )
+        print("cost_limit_usd:", budget["budget_limit_usd"])
     if not settings.enabled:
         print("status: disabled")
         return

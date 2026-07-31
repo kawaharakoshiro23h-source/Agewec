@@ -1088,6 +1088,403 @@ def _decision_log(state: WorkflowState) -> list[dict[str, Any]]:
     return decisions
 
 
+_PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
+    {
+        "id": "executive_producer",
+        "number": "01",
+        "title": "Executive Producer",
+        "kind": "LLM",
+        "purpose": "制作依頼を、全工程が共有する目的・制約・成功基準へ変換する。",
+        "input_source": "Project設定（人間が最初に指定）",
+        "inputs": [
+            "theme: 制作テーマ",
+            "target_award: 狙う部門・評価軸",
+            "target_duration_seconds: 最終目標尺",
+        ],
+        "process": "対象視聴者、納品物、制約、成功基準を定義する。",
+        "output": "ProjectBrief JSON",
+        "next": "Creative Director",
+    },
+    {
+        "id": "creative_director",
+        "number": "02",
+        "title": "Creative Director",
+        "kind": "LLM",
+        "purpose": "企画全体のコンセプト、色、トーン、カメラ意図を統一する。",
+        "input_source": "Project設定 + ProjectBrief",
+        "inputs": [
+            "objective / audience / constraints",
+            "success_criteria",
+            "target_award / target_duration_seconds",
+        ],
+        "process": "作品タイトル、訴求、視覚言語、音響方針、全体演出意図を策定する。",
+        "output": "CreativeConcept JSON",
+        "next": "Writer / Storyboard",
+    },
+    {
+        "id": "writer_storyboard",
+        "number": "03",
+        "title": "Writer / Storyboard",
+        "kind": "LLM + Code",
+        "purpose": "コンセプトを、指定尺に収まる具体的なカット列へ分解する。",
+        "input_source": "ProjectBrief + CreativeConcept",
+        "inputs": [
+            "作品コンセプトと成功基準",
+            "目標尺",
+            "カメラ意図・トーン",
+        ],
+        "process": "各カットの場面、秒数、ナレーション、時間帯、場所、被写体を構成し、コードで尺を補正する。",
+        "output": "Storyboard JSON（cuts[]）",
+        "next": "Asset Curator",
+    },
+    {
+        "id": "asset_curator",
+        "number": "04",
+        "title": "Asset Curator",
+        "kind": "Code + LLM",
+        "purpose": "各カットに、実在するAGEWEC公式写真を最低1枚割り当てる。",
+        "input_source": "Storyboard + ローカル素材カタログ",
+        "inputs": [
+            "cut id / time_of_day / location / subject / visual_role",
+            "素材ID、ジャンル、地域、時間帯、ローカルパス",
+        ],
+        "process": "コードが適合度を採点して写真を確定し、LLMは選定理由だけを説明する。",
+        "output": "AssetManifest JSON（primary + alternatives）",
+        "next": "Director",
+    },
+    {
+        "id": "director",
+        "number": "05",
+        "title": "Director",
+        "kind": "LLM",
+        "purpose": "各カットと選定写真を、動画生成に必要な個別演出へ変換する。",
+        "input_source": "CreativeConcept + Storyboard + AssetManifest",
+        "inputs": [
+            "カット内容と秒数",
+            "選定済みasset_id",
+            "全体のカメラ意図・連続性ルール",
+        ],
+        "process": "positive/negative prompt、カメラ移動、動きの強度、演出根拠を作る。",
+        "output": "DirectionPlan JSON（shots[]）",
+        "next": "Support Video Creator",
+    },
+    {
+        "id": "support_video_creator",
+        "number": "05.5",
+        "title": "Support Video Creator",
+        "kind": "Code",
+        "purpose": "演出指示を、ComfyUIが実行できる技術パラメータへ安全に変換する。",
+        "input_source": "DirectionPlan + Production設定",
+        "inputs": [
+            "画像パスと生成Prompt",
+            "Storyboard秒数",
+            "解像度、FPS、steps、モデル制約",
+        ],
+        "process": "秒数をLTX互換フレーム数へ変換し、seedや出力設定を確定する。",
+        "output": "ProductionRequest JSON（カット別）",
+        "next": "Image / Video Production",
+    },
+    {
+        "id": "image_video_production",
+        "number": "06",
+        "title": "Image / Video Production",
+        "kind": "ComfyUI Tool",
+        "purpose": "確定済み画像とPromptから、カット単位の実MP4を生成する。",
+        "input_source": "ProductionRequest",
+        "inputs": [
+            "入力画像",
+            "positive/negative prompt",
+            "frames / fps / width / height / steps / seed",
+        ],
+        "process": "ComfyUI APIへ投入し、完了を待って生成動画と実行情報を保存する。",
+        "output": "MediaArtifact（MP4 + generation metadata）",
+        "next": "Cut Visual QA",
+    },
+    {
+        "id": "cut_visual_qa",
+        "number": "07A",
+        "title": "Cut Visual QA",
+        "kind": "Code + Review Gate",
+        "purpose": "生成直後の各カットを検査し、問題の種類に応じて必要な工程だけへ戻す。",
+        "input_source": "ProductionRequest + 生成MP4",
+        "inputs": [
+            "要求尺・解像度・FPS",
+            "生成動画",
+            "代表フレーム",
+        ],
+        "process": "デコード、尺、解像度を検査し、passまたは修正先を判定する。",
+        "output": "CutQAResult JSON",
+        "next": "次カット / Director / Asset Curator / Support Video Creator",
+    },
+    {
+        "id": "visual_qa",
+        "number": "07B",
+        "title": "Sequence Readiness QA",
+        "kind": "Code / LLM",
+        "purpose": "全カットが揃い、最終編集へ進める状態かを確認する。",
+        "input_source": "全CutQAResult + 全生成Artifact",
+        "inputs": [
+            "承認済みカットID",
+            "失敗カットID",
+            "技術QA結果",
+        ],
+        "process": "欠落、不整合、未承認カットを検査して次の経路を決定する。",
+        "output": "VisualQAResult JSON",
+        "next": "Post Production",
+    },
+    {
+        "id": "post_production",
+        "number": "08",
+        "title": "Post Production",
+        "kind": "FFmpeg Tool",
+        "purpose": "承認済みカットを正規化・結合し、指定尺の最終MP4にする。",
+        "input_source": "Storyboard + 承認済みMediaArtifact",
+        "inputs": [
+            "カット順・目標秒数",
+            "各MP4",
+            "最終解像度・FPS",
+        ],
+        "process": "各カットをトリム・正規化して結合し、最終動画を再検査する。",
+        "output": "final_video.mp4 + EditManifest + TechnicalReport",
+        "next": "Review Board",
+    },
+    {
+        "id": "review_board",
+        "number": "09",
+        "title": "Review Board",
+        "kind": "LLM / Human",
+        "purpose": "最終動画と制作要件を採点し、提出可否または修正を判断する。",
+        "input_source": "最終MP4 + 技術QA + 上流成果物",
+        "inputs": [
+            "コンセプト・Storyboard・素材証跡",
+            "最終Technical QA",
+            "評価rubric",
+        ],
+        "process": "AI採点または人間確認を行い、pass/reviseを返す。",
+        "output": "ReviewBoardResult JSON",
+        "next": "Final Submission Review",
+    },
+    {
+        "id": "final_submission",
+        "number": "H3",
+        "title": "Final Submission Review",
+        "kind": "Human / Policy Gate",
+        "purpose": "提出直前に最終動画と未解決事項を確認し、公開を承認する。",
+        "input_source": "ReviewBoardResult + final_video.mp4",
+        "inputs": [
+            "最終動画",
+            "最終技術QA",
+            "警告・Review Board結果",
+        ],
+        "process": "approve / retry_with_feedback / abortを選択する。",
+        "output": "ReviewDecision",
+        "next": "Provenance",
+    },
+    {
+        "id": "provenance",
+        "number": "10",
+        "title": "Provenance & Submission Package",
+        "kind": "Code",
+        "purpose": "動画と全判断記録を、第三者が追跡できる提出Packageへまとめる。",
+        "input_source": "全phase_results + reviews + events + artifacts",
+        "inputs": [
+            "各工程の構造化出力",
+            "人間・自動承認履歴",
+            "動画・QA・編集成果物",
+        ],
+        "process": "証跡をサニタイズし、レポート、JSON、ハッシュManifestを生成する。",
+        "output": "Submission Package（HTML / JSON / JSONL / MP4）",
+        "next": "提出完了",
+    },
+)
+
+
+def _compact_text(value: Any, limit: int = 420) -> str:
+    text = str(value or "").strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _phase_actual_items(
+    phase: str,
+    result: dict[str, Any],
+    state: WorkflowState,
+) -> list[tuple[str, Any]]:
+    data = result.get("data", {})
+    if phase == "executive_producer":
+        return [
+            ("目的", data.get("objective")),
+            ("対象", data.get("audience")),
+            ("狙う賞", data.get("target_award")),
+            ("目標尺", f"{data.get('target_duration_seconds')}秒"),
+            ("成功基準", data.get("success_criteria", [])),
+        ]
+    if phase == "creative_director":
+        return [
+            ("コンセプト", data.get("title")),
+            ("一行企画", data.get("logline")),
+            ("トーン", data.get("tone", [])),
+            ("カメラ意図", data.get("camera_intent", {})),
+        ]
+    if phase == "writer_storyboard":
+        cuts = [
+            (
+                f"Cut {cut.get('id')}: {cut.get('name')} / "
+                f"{cut.get('seconds')}秒 / {cut.get('time_of_day')} / "
+                f"{cut.get('location')} — {cut.get('scene')}"
+            )
+            for cut in data.get("cuts", [])
+        ]
+        return [
+            ("合計尺", f"{data.get('total_seconds')}秒"),
+            ("カット構成", cuts),
+            ("尺補正", data.get("duration_adjustment", {})),
+        ]
+    if phase == "asset_curator":
+        assignments = []
+        for item in data.get("asset_assignments", []):
+            primary = item.get("primary", {})
+            assignments.append(
+                (
+                    f"Cut {item.get('cut_id')}: "
+                    f"{primary.get('asset_id')} {primary.get('title')} / "
+                    f"コード根拠: {primary.get('selection_reason', '')} / "
+                    f"LLM説明: {primary.get('llm_rationale', '')}"
+                )
+            )
+        return [
+            ("選定方式", data.get("selection_mode")),
+            ("確定素材", assignments),
+        ]
+    if phase == "director":
+        shots = [
+            (
+                f"Cut {shot.get('id')}: asset="
+                f"{shot.get('asset', {}).get('asset_id')} / "
+                f"camera={shot.get('camera_motion')} / "
+                f"prompt={_compact_text(shot.get('positive_prompt'), 260)} / "
+                f"根拠={shot.get('rationale', '')}"
+            )
+            for shot in data.get("shots", [])
+        ]
+        return [
+            ("カット別演出", shots),
+            ("連続性確認", data.get("continuity_checks", [])),
+        ]
+    if phase == "support_video_creator":
+        requests = state.get("production_requests", {})
+        return [
+            (
+                "生成Request",
+                [
+                    (
+                        f"Cut {item.get('cut_id')}: "
+                        f"{item.get('width')}x{item.get('height')}, "
+                        f"{item.get('frames')} frames, "
+                        f"{item.get('fps')}fps, {item.get('steps')} steps"
+                    )
+                    for item in requests.values()
+                ],
+            )
+        ]
+    if phase == "image_video_production":
+        artifacts = state.get("production_artifacts", {})
+        return [
+            ("生成済みカット", sorted(map(int, artifacts.keys()))),
+            (
+                "生成動画",
+                [
+                    f"Cut {key}: {value.get('path')}"
+                    for key, value in sorted(artifacts.items())
+                ],
+            ),
+        ]
+    if phase == "cut_visual_qa":
+        qa_results = state.get("cut_qa_results", {})
+        return [
+            (
+                "カット別QA",
+                [
+                    (
+                        f"Cut {key}: {value.get('verdict')} / "
+                        f"{value.get('issue_class')}"
+                    )
+                    for key, value in sorted(qa_results.items())
+                ],
+            ),
+            ("承認済みカット", state.get("approved_cut_ids", [])),
+        ]
+    if phase == "visual_qa":
+        return [
+            ("判定", data.get("verdict") or result.get("status")),
+            ("問題", data.get("issues", [])),
+            ("次の経路", data.get("route") or data.get("recommended_route")),
+        ]
+    if phase == "post_production":
+        technical = data.get("technical_qa", {})
+        return [
+            ("実装", data.get("implementation")),
+            ("最終動画", data.get("output_path")),
+            (
+                "Technical QA",
+                {
+                    "status": technical.get("status"),
+                    "duration_seconds": technical.get("duration_seconds"),
+                    "resolution": (
+                        f"{technical.get('width')}x{technical.get('height')}"
+                    ),
+                    "fps": technical.get("fps"),
+                },
+            ),
+        ]
+    if phase == "review_board":
+        return [
+            ("モード", data.get("mode", "ai")),
+            ("判定", data.get("verdict")),
+            ("平均点", data.get("average")),
+            ("推奨事項", data.get("recommendations", [])),
+        ]
+    if phase == "provenance":
+        return [
+            ("提出Package", data.get("package_dir")),
+            ("最終動画", data.get("final_video")),
+            ("Process Report", data.get("process_report")),
+            ("Manifest", data.get("manifest")),
+        ]
+    return [("生成結果", result.get("summary", ""))]
+
+
+def _format_markdown_value(value: Any) -> str:
+    if isinstance(value, list):
+        return "; ".join(_compact_text(item) for item in value) or "—"
+    if isinstance(value, dict):
+        return "; ".join(
+            f"{key}={_compact_text(item)}"
+            for key, item in value.items()
+            if item not in (None, "", [], {})
+        ) or "—"
+    return _compact_text(value) or "—"
+
+
+def _render_html_value(value: Any) -> str:
+    if isinstance(value, list):
+        if not value:
+            return "<span class='muted'>—</span>"
+        return "<ul>" + "".join(
+            f"<li>{html.escape(_compact_text(item))}</li>"
+            for item in value
+        ) + "</ul>"
+    if isinstance(value, dict):
+        if not value:
+            return "<span class='muted'>—</span>"
+        return "<dl>" + "".join(
+            f"<dt>{html.escape(str(key))}</dt>"
+            f"<dd>{html.escape(_compact_text(item))}</dd>"
+            for key, item in value.items()
+            if item not in (None, "", [], {})
+        ) + "</dl>"
+    return f"<span>{html.escape(_compact_text(value)) or '—'}</span>"
+
+
 def _process_markdown(state: WorkflowState, video_name: str) -> str:
     lines = [
         "# AGEWEC Production Process Report",
@@ -1097,35 +1494,72 @@ def _process_markdown(state: WorkflowState, video_name: str) -> str:
         f"- Target duration: "
         f"{state.get('project', {}).get('target_duration_seconds')} seconds",
         "",
-        "## Workflow phases",
+        "## 全体ワークフロー",
+        "",
+        " → ".join(
+            f"{item['number']} {item['title']}"
+            for item in _PHASE_PRESENTATION
+        ),
+        "",
+        "各工程の後には設定されたReview Gateがあり、承認、対象工程の再実行、"
+        "中止を選べます。Cut QAは問題種別に応じて生成、演出、素材選定へ戻ります。",
+        "",
+        "## ノードごとの入出力と実行結果",
         "",
     ]
-    for phase, result in state.get("phase_results", {}).items():
+    phase_results = state.get("phase_results", {})
+    reviews = state.get("reviews", [])
+    for guide in _PHASE_PRESENTATION:
+        phase = guide["id"]
+        result = phase_results.get(phase, {})
+        related_reviews = [
+            review
+            for review in reviews
+            if review.get("phase") == phase
+            or review.get("source_phase") == phase
+        ]
         lines.extend(
             [
-                f"### {phase}",
+                f"### {guide['number']} {guide['title']}",
                 "",
-                f"- Status: `{result.get('status')}`",
-                f"- Summary: {result.get('summary', '')}",
-                f"- Attempt: {result.get('attempt')}",
-                f"- Confidence: {result.get('confidence')}",
+                f"- 種別: `{guide['kind']}`",
+                f"- 目的: {guide['purpose']}",
+                f"- 入力元: {guide['input_source']}",
+                f"- 入力情報: {'; '.join(guide['inputs'])}",
+                f"- 処理: {guide['process']}",
+                f"- 出力形式: `{guide['output']}`",
+                f"- 次工程: {guide['next']}",
+                f"- 実行状態: `{result.get('status', 'review-only')}`",
+                f"- 実行要約: {result.get('summary', 'Review Gateとして実行')}",
                 "",
             ]
         )
-    lines.extend(["## Human / policy reviews", ""])
-    for review in state.get("reviews", []):
-        lines.append(
-            f"- `{review.get('phase')}`: {review.get('action')} "
-            f"by {review.get('decided_by')}; "
-            f"{review.get('feedback', '')}"
-        )
+        if result:
+            for label, value in _phase_actual_items(
+                phase,
+                result,
+                state,
+            ):
+                lines.append(
+                    f"- 実際の{label}: {_format_markdown_value(value)}"
+                )
+        for review in related_reviews:
+            lines.append(
+                f"- 承認: `{review.get('action')}` "
+                f"by `{review.get('decided_by')}`"
+                + (
+                    f" — {review.get('feedback')}"
+                    if review.get("feedback")
+                    else ""
+                )
+            )
+        lines.append("")
     lines.extend(
         [
+            "## 補足",
             "",
-            "## Notes",
-            "",
-            "This report contains externally explainable decisions and evidence. "
-            "It does not contain private chain-of-thought.",
+            "このレポートは公開可能な入力、構造化出力、判断理由、承認履歴を"
+            "説明します。内部Chain-of-ThoughtやAPIサーバーログは掲載しません。",
             "",
         ]
     )
@@ -1133,39 +1567,180 @@ def _process_markdown(state: WorkflowState, video_name: str) -> str:
 
 
 def _process_html(state: WorkflowState, video_name: str) -> str:
+    phase_results = state.get("phase_results", {})
+    reviews = state.get("reviews", [])
+    flow_nodes = []
     cards = []
-    for phase, result in state.get("phase_results", {}).items():
+    for guide in _PHASE_PRESENTATION:
+        phase = guide["id"]
+        result = phase_results.get(phase, {})
+        status = str(result.get("status", "review-only"))
+        flow_nodes.append(
+            "<div class='flow-node'>"
+            f"<span>{html.escape(guide['number'])}</span>"
+            f"<strong>{html.escape(guide['title'])}</strong>"
+            f"<small>{html.escape(guide['kind'])}</small>"
+            "</div>"
+        )
+        actual = "".join(
+            "<div class='actual-row'>"
+            f"<h4>{html.escape(label)}</h4>"
+            f"{_render_html_value(value)}"
+            "</div>"
+            for label, value in (
+                _phase_actual_items(phase, result, state)
+                if result
+                else []
+            )
+        )
+        related_reviews = [
+            review
+            for review in reviews
+            if review.get("phase") == phase
+            or review.get("source_phase") == phase
+        ]
+        review_html = "".join(
+            "<div class='review-row'>"
+            f"<strong>{html.escape(str(review.get('action')))}</strong>"
+            f"<span>{html.escape(str(review.get('decided_by')))}</span>"
+            + (
+                f"<p>{html.escape(str(review.get('feedback')))}</p>"
+                if review.get("feedback")
+                else ""
+            )
+            + "</div>"
+            for review in related_reviews
+        ) or "<p class='muted'>この工程の承認記録はありません。</p>"
+        technical = {
+            "status": result.get("status"),
+            "attempt": result.get("attempt"),
+            "confidence": result.get("confidence"),
+            "warnings": result.get("warnings", []),
+            "blocking_issues": result.get("blocking_issues", []),
+            "artifacts": result.get("artifacts", []),
+        }
         payload = html.escape(
             json.dumps(
-                deterministic._sanitized(result),
+                deterministic._sanitized(technical),
                 ensure_ascii=False,
                 indent=2,
             )
         )
-        cards.append(
-            "<details class='card'>"
-            f"<summary>{html.escape(phase)} — "
-            f"{html.escape(str(result.get('status')))}</summary>"
-            f"<p>{html.escape(str(result.get('summary', '')))}</p>"
-            f"<pre>{payload}</pre></details>"
+        actual_html = (
+            actual
+            if actual
+            else "<p class='muted'>構造化成果物はありません。</p>"
         )
+        cards.append(
+            "<article class='phase-card'>"
+            "<header>"
+            f"<span class='phase-number'>{html.escape(guide['number'])}</span>"
+            "<div>"
+            f"<h2>{html.escape(guide['title'])}</h2>"
+            f"<span class='tag'>{html.escape(guide['kind'])}</span>"
+            f"<span class='status status-{html.escape(status)}'>"
+            f"{html.escape(status)}</span>"
+            "</div></header>"
+            "<section class='purpose'>"
+            "<h3>何のためのノードか</h3>"
+            f"<p>{html.escape(guide['purpose'])}</p></section>"
+            "<section class='contract-grid'>"
+            "<div><h3>入力</h3>"
+            f"<p class='source'>入力元: {html.escape(guide['input_source'])}</p>"
+            "<ul>"
+            + "".join(
+                f"<li>{html.escape(item)}</li>"
+                for item in guide["inputs"]
+            )
+            + "</ul></div>"
+            "<div><h3>処理</h3>"
+            f"<p>{html.escape(guide['process'])}</p></div>"
+            "<div><h3>出力</h3>"
+            f"<p><code>{html.escape(guide['output'])}</code></p>"
+            f"<p class='source'>次: {html.escape(guide['next'])}</p></div>"
+            "</section>"
+            "<section class='actual'>"
+            "<h3>この実行で生成・判断された内容</h3>"
+            f"<p class='run-summary'>{html.escape(str(result.get('summary', 'Review Gateとして実行')))}</p>"
+            f"{actual_html}"
+            "</section>"
+            "<section class='reviews'><h3>承認・修正履歴</h3>"
+            f"{review_html}</section>"
+            "<details class='technical'><summary>技術情報</summary>"
+            f"<pre>{payload}</pre></details>"
+            "</article>"
+        )
+    arrows = "<span class='flow-arrow'>→</span>".join(flow_nodes)
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AGEWEC Process Report</title>
 <style>
-body{{font-family:system-ui,sans-serif;max-width:1100px;margin:40px auto;
-padding:0 20px;background:#f5f5f2;color:#222}}
-.hero,.card{{background:white;border:1px solid #ddd;border-radius:14px;
-padding:18px;margin:12px 0}}summary{{font-weight:700;cursor:pointer}}
-pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f1eb;padding:14px}}
-video{{width:100%;max-height:520px;background:#000}}
+*{{box-sizing:border-box}}body{{font-family:Inter,ui-sans-serif,system-ui,sans-serif;
+max-width:1180px;margin:0 auto;padding:34px 22px 80px;background:#f4f3ef;
+color:#1c2522;line-height:1.65}}h1,h2,h3,h4,p{{margin-top:0}}
+.hero,.workflow,.phase-card{{background:#fff;border:1px solid #d9ddd8;
+border-radius:18px;box-shadow:0 8px 28px rgba(20,42,34,.06)}}
+.hero{{padding:28px;margin-bottom:24px}}.hero-grid{{display:grid;
+grid-template-columns:1.5fr 1fr;gap:26px;align-items:center}}
+.eyebrow{{color:#0b7257;font-weight:800;letter-spacing:.08em;
+text-transform:uppercase}}video{{width:100%;max-height:460px;background:#000;
+border-radius:12px}}.workflow{{padding:24px;margin-bottom:28px}}
+.flow{{display:flex;align-items:center;gap:9px;overflow-x:auto;padding:10px 0 16px}}
+.flow-node{{min-width:142px;padding:12px;border:1px solid #cdd8d3;
+border-radius:12px;background:#f7fbf9;display:grid;gap:3px}}
+.flow-node span,.phase-number{{font-weight:900;color:#0b7257}}
+.flow-node small{{color:#68736e}}.flow-arrow{{font-size:22px;color:#799087}}
+.loop-note{{background:#edf7f3;border-left:4px solid #0b7257;
+padding:12px 15px;border-radius:8px;margin:0}}
+.phase-card{{padding:24px;margin:18px 0}}.phase-card>header{{display:flex;
+gap:16px;align-items:flex-start;border-bottom:1px solid #e5e8e5;padding-bottom:16px}}
+.phase-number{{font-size:26px;min-width:56px}}.phase-card h2{{margin-bottom:5px}}
+.tag,.status{{display:inline-block;padding:3px 9px;border-radius:999px;
+font-size:12px;font-weight:750;margin-right:6px}}.tag{{background:#e9f3ef;color:#155d49}}
+.status{{background:#eceeec;color:#58615e}}.status-success{{background:#dff5e9;
+color:#11613e}}.status-error{{background:#fde6e3;color:#a1332b}}
+.purpose{{padding:18px 0 2px}}.contract-grid{{display:grid;
+grid-template-columns:1fr 1fr 1fr;gap:14px;margin:14px 0 22px}}
+.contract-grid>div{{background:#f7f7f4;border-radius:12px;padding:16px}}
+.contract-grid h3,.actual h3,.reviews h3,.purpose h3{{font-size:15px;
+color:#52615b;margin-bottom:7px}}.source,.muted{{color:#74807b}}
+.actual{{border-top:1px solid #e5e8e5;padding-top:20px}}.run-summary{{
+font-size:18px;font-weight:700}}.actual-row{{display:grid;
+grid-template-columns:180px 1fr;gap:16px;padding:10px 0;border-bottom:1px dashed #dde2de}}
+.actual-row h4{{font-size:14px;color:#51625b;margin:0}}ul{{margin:6px 0;
+padding-left:21px}}dl{{display:grid;grid-template-columns:minmax(120px,.35fr) 1fr;
+gap:6px 14px;margin:0}}dt{{font-weight:700}}dd{{margin:0}}code{{background:#ecefeb;
+padding:3px 6px;border-radius:5px}}.reviews{{padding-top:20px}}
+.review-row{{display:grid;grid-template-columns:140px 100px 1fr;gap:10px;
+padding:10px 12px;background:#f7fbf9;border-radius:9px;margin:7px 0}}
+.review-row p{{margin:0}}.technical{{margin-top:18px}}summary{{font-weight:700;
+cursor:pointer;color:#61706a}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;
+background:#202723;color:#dce8e2;padding:14px;border-radius:9px;font-size:12px}}
+.footer{{margin-top:30px;color:#68736e}}
+@media(max-width:760px){{.hero-grid,.contract-grid{{grid-template-columns:1fr}}
+.actual-row{{grid-template-columns:1fr}}.review-row{{grid-template-columns:1fr}}
+body{{padding:18px 12px 50px}}}}
 </style></head><body>
-<section class="hero"><h1>AGEWEC Production Process</h1>
-<p>Run ID: {html.escape(str(state.get('run_id')))}</p>
-<video controls src="{html.escape(video_name)}"></video></section>
-<h2>Phases</h2>{''.join(cards)}
-<p>公開可能な判断理由と証跡のみを掲載し、内部Chain-of-Thoughtは含みません。</p>
+<section class="hero"><div class="hero-grid"><div>
+<p class="eyebrow">Traceable AI Production</p>
+<h1>AGEWEC 制作プロセス</h1>
+<p>AIが何を受け取り、なぜ判断し、何を次工程へ渡したかを、
+最終動画と一緒に追跡できるレポートです。</p>
+<p>Run ID: <code>{html.escape(str(state.get('run_id')))}</code><br>
+目標尺: {html.escape(str(state.get('project', {}).get('target_duration_seconds')))}秒</p>
+</div><video controls src="{html.escape(video_name)}"></video></div></section>
+<section class="workflow"><h2>全体ワークフロー</h2>
+<p>左から右へ成果物が受け渡されます。各ノード後のReview Gateは、
+設定に応じて人間またはポリシーが承認します。</p>
+<div class="flow">{arrows}</div>
+<p class="loop-note"><strong>修正ループ:</strong> Cut QAは問題に応じて
+Image / Video Production、Support Video Creator、Director、Asset Curatorへ戻り、
+Review Boardの修正はPost Productionへ戻ります。</p></section>
+<main>{''.join(cards)}</main>
+<p class="footer">公開可能な入力、構造化出力、判断理由、承認履歴を掲載しています。
+内部Chain-of-Thought、APIキー、AIサーバーの生ログは掲載しません。
+完全な機械可読証跡はprovenance.jsonに保存されています。</p>
 </body></html>"""
 
 

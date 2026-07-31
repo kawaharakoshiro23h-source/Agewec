@@ -44,3 +44,40 @@ AGEWEC公式素材カタログ内の画像は、AGEWEC提出用途では使用�
 - 不足素材の自動ダウンロード
 - 昼・夕方・夜の素材属性追加
 - 夜景賞と素材フィルタの分離
+
+## 修正2: 素材Shortlistの微修正
+
+状態: `shortlist_implemented / follow_up_required`
+
+285件をLLMへ直接渡さず、カット別上位候補へ絞り込む処理は実装済み。
+ただし、昼夜事故をコード上で完全に防止するには次を追加する。
+
+### 必須修正
+
+1. **`eligible_cut_ids`を選定時に強制する**
+
+   現在はLLMへ優先利用を指示しているだけで、ユニオンに含まれる候補なら
+   対象外カットにも選択できる。選択結果の検証時に、`cut_id`が候補の
+   `eligible_cut_ids`に含まれない場合はエラーとして再選定させる。
+
+2. **`time_of_day`の表記を正規化する**
+
+   Storyboardが使用する次の値をShortlistの判定値へ変換する。
+
+   ```text
+   morning / afternoon / late_afternoon -> day
+   sunset / golden_hour / blue_hour / twilight -> dusk
+   evening / nighttime -> night
+   ```
+
+   現在の`day / dusk / night`以外を`unspecified`相当に扱うと、
+   `time_of_day`最優先ルールが中間カットで機能しない。
+
+### 追加確認
+
+- ローカル候補が0件なら、LLMを呼ぶ前に明示的なBlocking Issueにする
+- Deterministic経路にも同じShortlistまたは同等の安全規則を適用する
+- 昼カットへ夜候補を選べないこと、夕景表記の正規化、候補枯渇をUnit Test化する
+
+賞ジャンル変更による直接的な夜景偏重は基本的に発生しないが、上流の
+Storyboardが決めた`time_of_day`を経由した構成変化は意図した挙動として残す。

@@ -34,7 +34,7 @@ Creative Directorは具体的なカメラ移動を全カット分決めず、作
 - Directorは素材とカット内容を見て、具体的なカメラ移動を選ぶ。
 - Directorは選択理由、全体方針との関係、意図的な逸脱理由を残す。
 - H1ではコンセプト、トーン、`camera_intent`をまとめて承認する。
-- 詳細は[Phase 05の修正案](./REVISION_BACKLOG_PHASE_05.md)を参照する。
+- 詳細は[Phase 05の修正案](../revisions/REVISION_BACKLOG_PHASE_05.md)を参照する。
 
 ## 処理フロー
 

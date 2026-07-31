@@ -11,6 +11,13 @@ from unittest.mock import patch
 import yaml
 
 from agewec_v2.graph import build_graph
+from agewec_v2 import nodes_llm
+from agewec_v2.nodes_llm import (
+    _canonical_asset_id,
+    _compact_asset_candidates_for_llm,
+    _normalize_japanese_narration,
+    _rescale_cut_durations,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +49,8 @@ ROLE_OUTPUTS = {
             "hard_constraints": ["建築と地形を維持する"],
         },
         "audio_direction": "静かに始まり広がる",
-        "success_criteria": ["北九州固有の魅力が伝わる"],
+        # 上流基準を転記しない出力でも、コード側で必ず継承される。
+        "success_criteria": ["映像全体の色調と動きを統一する"],
     },
     "writer_storyboard": {
         "total_seconds": 30,
@@ -51,8 +59,11 @@ ROLE_OUTPUTS = {
                 "id": 1,
                 "name": "導入",
                 "scene": "北九州の夜景",
-                "narration": "光の街へ。",
-                "seconds": 15,
+                "narration": (
+                    "Welcome to Kitakyushu, where city lights connect "
+                    "industry, culture, and everyday life."
+                ),
+                "seconds": 14,
                 "media_requirement": "video_required",
                 "time_of_day": "day",
                 "visual_role": "opening",
@@ -72,54 +83,6 @@ ROLE_OUTPUTS = {
                 "subject": "夜景",
             },
         ],
-    },
-    "asset_curator": {
-        "selections": [
-            {
-                "cut_id": 1,
-                "primary": {
-                    "asset_id": "asset-001",
-                    "reason": "導入に合う",
-                },
-                "alternatives": [],
-            },
-            {
-                "cut_id": 2,
-                "primary": {
-                    "asset_id": "asset-002",
-                    "reason": "産業景観に合う",
-                },
-                "alternatives": [],
-            },
-        ],
-        "missing_requirements": [],
-    },
-    "director": {
-        "shots": [
-            {
-                "cut_id": 1,
-                "asset_id": "asset-001",
-                "positive_prompt": "Kitakyushu night view, slow push in",
-                "negative_prompt": "",
-                "camera_motion": "slow push in",
-                "motion_intensity": "subtle",
-                "rationale": "導入に奥行きを与える",
-                "camera_intent_alignment": "安定した導入",
-                "deviation_reason": None,
-            },
-            {
-                "cut_id": 2,
-                "asset_id": "asset-002",
-                "positive_prompt": "Kitakyushu industrial lights, slow pan",
-                "negative_prompt": "",
-                "camera_motion": "slow pan",
-                "motion_intensity": "subtle",
-                "rationale": "街の広がりを見せる",
-                "camera_intent_alignment": "終盤へ穏やかに導く",
-                "deviation_reason": None,
-            },
-        ],
-        "continuity_checks": ["deep blueとamberを維持"],
     },
     "visual_qa": {
         "verdict": "pass",
@@ -168,6 +131,7 @@ ROLE_OUTPUTS = {
 
 class FakeChatHandler(BaseHTTPRequestHandler):
     roles: list[str] = []
+    payloads: dict[str, dict] = {}
 
     def do_POST(self) -> None:
         if self.path != "/v1/chat/completions":
@@ -176,9 +140,47 @@ class FakeChatHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(length))
         user_content = request["messages"][-1]["content"]
-        role = json.loads(user_content)["role"]
+        user_payload = json.loads(user_content)
+        role = user_payload["role"]
         self.__class__.roles.append(role)
-        output = ROLE_OUTPUTS[role]
+        self.__class__.payloads[role] = user_payload
+        upstream = user_payload["approved_upstream_context"]
+        if role == "asset_curator_rationale":
+            output = {
+                "rationales": [
+                    {
+                        "cut_id": item["cut"]["id"],
+                        "reason": (
+                            f"{item['selected_asset']['title']}は"
+                            "カット条件とコード採点に適合する。"
+                        ),
+                    }
+                    for item in upstream["final_selections"]
+                ]
+            }
+        elif role == "director":
+            assignments = upstream["asset_manifest"]["asset_assignments"]
+            output = {
+                "shots": [
+                    {
+                        "cut_id": item["cut_id"],
+                        "asset_id": item["primary"]["asset_id"],
+                        "positive_prompt": (
+                            "Kitakyushu cityscape, subtle cinematic motion"
+                        ),
+                        "negative_prompt": "",
+                        "camera_motion": "slow push in",
+                        "motion_intensity": "subtle",
+                        "rationale": "素材の奥行きを保ちながら見せる",
+                        "camera_intent_alignment": "安定した動き",
+                        "deviation_reason": None,
+                    }
+                    for item in assignments
+                ],
+                "continuity_checks": ["deep blueとamberを維持"],
+            }
+        else:
+            output = ROLE_OUTPUTS[role]
         body = json.dumps(
             {
                 "id": f"fake-{role}",
@@ -212,6 +214,7 @@ class LLMIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         FakeChatHandler.roles = []
+        FakeChatHandler.payloads = {}
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatHandler)
         cls.thread = threading.Thread(
             target=cls.server.serve_forever,
@@ -282,16 +285,95 @@ class LLMIntegrationTest(unittest.TestCase):
             "executive_producer",
             "creative_director",
             "writer_storyboard",
-            "asset_curator",
+            "asset_curator_rationale",
             "director",
             "review_board",
         }
         self.assertEqual(set(FakeChatHandler.roles), expected_roles)
         for role in expected_roles:
-            llm = result["phase_results"][role]["llm"]
+            phase = (
+                "asset_curator"
+                if role == "asset_curator_rationale"
+                else role
+            )
+            llm = result["phase_results"][phase]["llm"]
             self.assertEqual(llm["provider"], "openai_compatible")
             self.assertEqual(llm["model"], "fake-model")
             self.assertEqual(llm["usage"]["total_tokens"], 30)
+
+        concept = result["phase_results"]["creative_director"]["data"]
+        self.assertEqual(
+            concept["inherited_success_criteria"],
+            ["北九州固有の魅力が伝わる"],
+        )
+        self.assertEqual(
+            concept["success_criteria"],
+            [
+                "北九州固有の魅力が伝わる",
+                "映像全体の色調と動きを統一する",
+            ],
+        )
+
+        storyboard = result["phase_results"]["writer_storyboard"]["data"]
+        self.assertEqual(
+            sum(cut["seconds"] for cut in storyboard["cuts"]),
+            30,
+        )
+        self.assertTrue(storyboard["duration_adjustment"]["applied"])
+        self.assertEqual(
+            storyboard["duration_adjustment"]["method"],
+            "proportional_scale",
+        )
+        self.assertAlmostEqual(
+            storyboard["duration_adjustment"]["scale_factor"],
+            30 / 29,
+            places=6,
+        )
+        self.assertEqual(storyboard["narration_language"], "ja")
+        self.assertTrue(storyboard["narration_adjustments"])
+        self.assertNotRegex(
+            storyboard["cuts"][0]["narration"],
+            r"[A-Za-z]",
+        )
+
+        curator_upstream = FakeChatHandler.payloads[
+            "asset_curator_rationale"
+        ][
+            "approved_upstream_context"
+        ]
+        final_selections = curator_upstream["final_selections"]
+        self.assertTrue(final_selections)
+        for item in final_selections:
+            candidate = item["selected_asset"]
+            self.assertNotIn("source_url", candidate)
+            self.assertNotIn("detail_url", candidate)
+            self.assertNotIn("local_path", candidate)
+            self.assertNotIn("sha256", candidate)
+            self.assertIn("eligible_cut_ids", candidate)
+            self.assertIn("scores_by_cut", candidate)
+
+        assignments = result["phase_results"]["asset_curator"]["data"][
+            "asset_assignments"
+        ]
+        self.assertEqual(len(assignments), 2)
+        for item in assignments:
+            self.assertIn(
+                item["cut_id"],
+                item["primary"]["eligible_cut_ids"],
+            )
+            self.assertEqual(
+                item["primary"]["rationale_source"],
+                "llm",
+            )
+            self.assertEqual(
+                item["primary"]["selection_reason_source"],
+                "deterministic",
+            )
+        shots = result["phase_results"]["director"]["data"]["shots"]
+        self.assertEqual(
+            [shot["asset"]["asset_id"] for shot in shots],
+            [item["primary"]["asset_id"] for item in assignments],
+        )
 
         final_video_path = Path(result["final_output"])
         self.assertTrue(final_video_path.exists())
@@ -304,6 +386,227 @@ class LLMIntegrationTest(unittest.TestCase):
             "test-secret-never-persist",
             provenance_path.read_text(encoding="utf-8"),
         )
+
+    def test_japanese_narration_is_shortened_to_cut_allowance(self) -> None:
+        normalized, reasons = _normalize_japanese_narration(
+            {
+                "visual_role": "climax",
+                "time_of_day": "night",
+                "narration": (
+                    "光に包まれた北九州の街並みと人々の営みが、"
+                    "未来へ続く壮大な物語を静かに描き出します。"
+                ),
+            },
+            allowance=16,
+        )
+        self.assertLessEqual(len(normalized), 16)
+        self.assertIn("duration_fit_shortened", reasons)
+        self.assertNotRegex(normalized, r"[A-Za-z]")
+
+    def test_asset_candidate_payload_omits_provenance_fields(self) -> None:
+        compact = _compact_asset_candidates_for_llm(
+            [
+                {
+                    "asset_id": "asset-001",
+                    "title": "皿倉山夜景",
+                    "genres": ["イルミネーション・夜景"],
+                    "areas": ["八幡東区"],
+                    "time_of_day": "night",
+                    "visual_roles": ["climax"],
+                    "target_award_match": True,
+                    "eligible_cut_ids": [3],
+                    "scores_by_cut": {"3": 13},
+                    "source_url": "https://example.invalid/image.jpg",
+                    "detail_url": "https://example.invalid/detail",
+                    "local_path": "/large/local/path/image.jpg",
+                    "file_size_bytes": 123456,
+                    "sha256": "a" * 64,
+                    "acquired_at": "2026-07-31T00:00:00Z",
+                }
+            ]
+        )
+        self.assertEqual(compact[0]["asset_id"], "asset-001")
+        self.assertEqual(compact[0]["scores_by_cut"], {"3": 13})
+        for omitted in (
+            "source_url",
+            "detail_url",
+            "local_path",
+            "file_size_bytes",
+            "sha256",
+            "acquired_at",
+        ):
+            self.assertNotIn(omitted, compact[0])
+
+    def test_asset_id_zero_padding_is_canonicalized(self) -> None:
+        self.assertEqual(_canonical_asset_id("asset-6"), "asset-006")
+        self.assertEqual(_canonical_asset_id("asset-06"), "asset-006")
+        self.assertEqual(_canonical_asset_id("asset-006"), "asset-006")
+        self.assertEqual(_canonical_asset_id("ASSET-6"), "asset-006")
+        self.assertEqual(
+            _canonical_asset_id("not-an-asset"),
+            "not-an-asset",
+        )
+
+    def test_asset_selection_is_deterministic_and_target_retry_rotates(
+        self,
+    ) -> None:
+        candidates = [
+            {
+                "asset_id": f"asset-{index:03d}",
+                "title": title,
+                "genres": ["観光スポット"],
+                "areas": ["小倉"],
+                "local_path": f"/tmp/asset-{index:03d}.jpg",
+                "local_available": True,
+                "time_of_day": "day_or_unspecified",
+                "visual_roles": ["opening"],
+                "target_award_match": True,
+                "eligible_cut_ids": [1],
+                "scores_by_cut": {"1": score},
+            }
+            for index, title, score in (
+                (1, "候補A", 12),
+                (2, "候補B", 10),
+                (3, "候補C", 8),
+            )
+        ]
+        state = {
+            "run_id": "asset-ranker-test",
+            "project": {"target_award": "観光賞"},
+            "config": {
+                "llm": {"enabled": False},
+                "assets": {
+                    "shortlist_per_cut": 8,
+                    "alternatives_per_cut": 2,
+                },
+            },
+            "phase_results": {
+                "writer_storyboard": {
+                    "data": {
+                        "cuts": [
+                            {
+                                "id": 1,
+                                "name": "導入",
+                                "scene": "昼の小倉",
+                                "seconds": 3,
+                                "time_of_day": "day",
+                                "visual_role": "opening",
+                                "location": "小倉",
+                                "subject": "街",
+                            }
+                        ]
+                    }
+                }
+            },
+            "attempts": {},
+            "feedback": {},
+            "review_context": {},
+            "events": [],
+            "artifacts": [],
+        }
+        with (
+            patch.object(
+                nodes_llm,
+                "_asset_candidates",
+                return_value=candidates,
+            ),
+            patch.object(
+                nodes_llm,
+                "_shortlist_candidates",
+                return_value=candidates,
+            ),
+            patch.object(
+                nodes_llm.deterministic,
+                "_load_catalog",
+                return_value={"source": "test catalog"},
+            ),
+        ):
+            first = nodes_llm.asset_curator(state)
+            first_data = first["phase_results"]["asset_curator"]["data"]
+            self.assertEqual(
+                first_data["asset_assignments"][0]["primary"]["asset_id"],
+                "asset-001",
+            )
+            self.assertTrue(first_data["rationale_fallback_used"])
+
+            retry_state = {
+                **state,
+                **first,
+                "feedback": {
+                    "asset_curator": "この素材は合わないので別候補へ",
+                },
+                "review_context": {
+                    "asset_curator": {"target_cut_id": 1},
+                },
+            }
+            second = nodes_llm.asset_curator(retry_state)
+            second_data = second["phase_results"]["asset_curator"]["data"]
+            self.assertEqual(
+                second_data["asset_assignments"][0]["primary"]["asset_id"],
+                "asset-002",
+            )
+            self.assertEqual(
+                second_data["asset_assignments"][0]["primary"][
+                    "selection_source"
+                ],
+                "retry_next_candidate",
+            )
+
+            explicit_state = {
+                **retry_state,
+                **second,
+                "feedback": {
+                    "asset_curator": "asset-3へ変更してください",
+                },
+            }
+            explicit = nodes_llm.asset_curator(explicit_state)
+            explicit_data = explicit["phase_results"]["asset_curator"]["data"]
+            self.assertEqual(
+                explicit_data["asset_assignments"][0]["primary"]["asset_id"],
+                "asset-003",
+            )
+            self.assertEqual(
+                explicit_data["asset_assignments"][0]["primary"][
+                    "selection_source"
+                ],
+                "explicit_feedback",
+            )
+
+    def test_cut_durations_are_forced_to_target_by_proportional_scale(
+        self,
+    ) -> None:
+        cuts, adjustment = _rescale_cut_durations(
+            [
+                {"id": 1, "seconds": 4.1},
+                {"id": 2, "seconds": 5.2},
+                {"id": 3, "seconds": 6.0},
+                {"id": 4, "seconds": 5.0},
+                {"id": 5, "seconds": 7.0},
+            ],
+            target_seconds=30.0,
+            warning_threshold_seconds=2.0,
+        )
+        self.assertAlmostEqual(
+            sum(float(cut["seconds"]) for cut in cuts),
+            30.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            adjustment["scale_factor"],
+            30.0 / 27.3,
+            places=6,
+        )
+        self.assertTrue(adjustment["large_adjustment_warning"])
+        ratios = [
+            change["adjusted_seconds"] / change["original_seconds"]
+            for change in adjustment["cut_changes"][:-1]
+        ]
+        for ratio in ratios:
+            self.assertAlmostEqual(
+                ratio,
+                adjustment["scale_factor"],
+                places=5,
+            )
 
 
 if __name__ == "__main__":

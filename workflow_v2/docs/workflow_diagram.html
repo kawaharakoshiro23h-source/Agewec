@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AGEWEC 自律制作ワークフロー</title>
+<style>
+:root{--navy:#203864;--ink:#1f2733;--sub:#5b6570;--line:#dbe2ea;--bg:#f6f8fb;
+  --human:#8a5a00;--humanbg:#fdf3e0;--humanline:#e3c281;
+  --out:#0f6e56;--outbg:#e3f5ee;--outline:#9fd7c4;--muted:#8894a2;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;line-height:1.65;}
+.wrap{max-width:640px;margin:0 auto;padding:34px 24px 56px;}
+h1{font-size:21px;color:var(--navy);margin:0 0 4px;font-weight:700;text-align:center;}
+.lead{text-align:center;color:var(--sub);font-size:13px;margin:0 0 22px;}
+.flow{display:flex;flex-direction:column;align-items:stretch;gap:0;}
+.box{background:#fff;border:1.5px solid var(--navy);border-radius:12px;padding:12px 16px;
+  text-align:center;box-shadow:0 1px 2px rgba(20,40,80,.05);}
+.box .t{font-weight:700;color:var(--navy);font-size:15px;}
+.box .s{font-size:12px;color:var(--sub);margin-top:2px;}
+.human{background:var(--humanbg);border-color:var(--humanline);}
+.human .t{color:var(--human);}
+.muted{border-color:var(--line);border-style:dashed;opacity:.85;}
+.muted .t{color:var(--muted);}
+.arrow{align-self:center;color:#9aa6b4;font-size:15px;margin:7px 0;}
+.qa{background:#eef4fb;border-color:#a9c6e6;}
+.qa .t{color:var(--navy);}
+.branch{font-size:11.5px;color:var(--sub);background:#fff;border:1px dashed var(--line);
+  border-radius:8px;padding:7px 10px;margin:7px 0 0;text-align:left;}
+.branch b{color:#a34;}
+.output{background:var(--outbg);border:2px solid var(--outline);border-radius:14px;
+  padding:14px 16px;margin-top:4px;}
+.output .h{font-weight:700;color:var(--out);font-size:14px;margin-bottom:8px;text-align:center;}
+.outrow{display:flex;gap:10px;}
+.outcard{flex:1;background:#fff;border:1px solid var(--outline);border-radius:10px;padding:10px 12px;}
+.outcard .n{font-weight:700;color:var(--out);font-size:13px;}
+.outcard .d{font-size:12px;color:var(--sub);margin-top:2px;}
+.note{margin-top:16px;font-size:12px;color:var(--sub);background:#fff;
+  border-left:4px solid var(--navy);border-radius:0 8px 8px 0;padding:10px 14px;}
+footer{margin-top:22px;text-align:center;font-size:11px;color:#9aa4b0;}
+@media print{body{background:#fff;}.box,.output{box-shadow:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>AGEWEC 2026 — AIエージェント自律制作ワークフロー</h1>
+  <p class="lead">生成AI・AIエージェントが、企画から動画生成までを自律実行。<br>重要な3地点で人が承認・修正できる（Human-in-the-loop）。</p>
+
+  <div class="flow">
+    <div class="box"><div class="t">Executive Producer</div><div class="s">企画・制作要件の定義</div></div>
+    <div class="arrow">▼</div>
+    <div class="box"><div class="t">Creative Director</div><div class="s">コンセプト・トーン設計</div></div>
+    <div class="arrow">▼</div>
+    <div class="box human"><div class="t">人間確認 1 — コンセプト承認</div></div>
+    <div class="arrow">▼</div>
+    <div class="box"><div class="t">Writer / Storyboard</div><div class="s">台本・カット構成（秒数配分）</div></div>
+    <div class="arrow">▼</div>
+    <div class="box"><div class="t">Asset Curator</div><div class="s">北九州公式素材の選定（時間帯・エリアで絞込）</div></div>
+    <div class="arrow">▼</div>
+    <div class="box"><div class="t">Director</div><div class="s">カット別の演出・生成プロンプト設計</div></div>
+    <div class="arrow">▼</div>
+    <div class="box human"><div class="t">人間確認 2 — 絵コンテ・素材・演出承認</div></div>
+    <div class="arrow">▼</div>
+    <div class="box"><div class="t">Image / Video Production</div><div class="s">実写を起点にAIで動画生成（バックエンド差替可）</div></div>
+    <div class="arrow">▼</div>
+    <div class="box qa"><div class="t">Visual QA</div><div class="s">品質・尺・破綻の検査</div></div>
+    <div class="branch">不合格時は種類に応じて自動で差し戻し：<b>映像破綻</b>→動画生成へ／<b>素材不適合</b>→素材選定へ</div>
+    <div class="arrow">▼</div>
+    <div class="box muted"><div class="t">編集・結合</div><div class="s">クリップ結合・字幕・仕上げ（構築中）</div></div>
+    <div class="arrow">▼</div>
+    <div class="box human"><div class="t">人間確認 3 — 最終提出承認</div></div>
+    <div class="arrow">▼</div>
+
+    <div class="output">
+      <div class="h">最終成果物（2種を同時に自動生成）</div>
+      <div class="outrow">
+        <div class="outcard"><div class="n">① 完成動画</div><div class="d">北九州プロモーション動画（mp4）</div></div>
+        <div class="outcard"><div class="n">② 制作レポート</div><div class="d">各ノードの入力・判断・生成内容と証跡を記録</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    本システムは、動画そのものだけでなく、<b>「どのAIエージェントが・何を根拠に・何を生成したか」を各工程で記録し、動画と同時に制作レポートとして出力</b>します。制作過程が追跡・再現できることを重視した設計です。
+  </div>
+  <div class="note" style="border-left-color:var(--out);">
+    生成モデルは<b>ローカル（無料）でも、クラウドAPIでも動作可能</b>（バックエンド差し替え可）。ローカル完結での自律実行を確認済みで、品質・速度に応じてモデルを差し替えられます。
+  </div>
+
+  <footer>AGEWEC 2026 応募作品 — 自律制作ワークフロー（制作進行中）</footer>
+</div>
+</body>
+</html>

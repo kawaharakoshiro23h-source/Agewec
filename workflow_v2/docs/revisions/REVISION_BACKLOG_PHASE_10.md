@@ -1,7 +1,7 @@
 # Phase 10 Revision Backlog
 
 > 状態: Run別提出Package、動画、証跡、HTML、判断ログ、SHA-256 Manifestを実装済み。
-> 現行仕様は[Phase 10](PHASE_10_PROVENANCE_SUBMISSION.md)を参照。
+> 現行仕様は[Phase 10](../phases/PHASE_10_PROVENANCE_SUBMISSION.md)を参照。
 
 現在の単一`provenance.json`保存を、完成動画、機械可読証跡、
 人間が理解できる制作ストーリー、提出資料をまとめたPackageへ変更する。

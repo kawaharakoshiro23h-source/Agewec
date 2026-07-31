@@ -13,7 +13,7 @@
 - Phase 10で動画、証跡、HTMLレポート、ハッシュManifestを出力
 
 全体図と実装ファイルは
-[IMPLEMENTATION_6_10.md](IMPLEMENTATION_6_10.md)を参照してください。
+[IMPLEMENTATION_6_10.md](docs/guides/IMPLEMENTATION_6_10.md)を参照してください。
 
 ## 安全なローカル確認
 
@@ -38,6 +38,29 @@ PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.run \
 ```
 
 実ComfyUIでは、全カットの`asset.local_path`が存在する必要がある。
+
+### 最小の実統合テスト（1カット・既定2秒）
+
+Asset Curatorが選んだローカル画像とDirectorが生成したPromptをそのまま
+ComfyUIへ渡し、Phase 07Aの技術QAまでを小型LangGraphで確認する。
+
+```bash
+cd /Users/koshiro/Downloads/Agewec
+PYTHONPATH=workflow_v2 .venv/bin/python \
+  -m agewec_v2.test_pipeline_1cut
+```
+
+別カットや元のStoryboard尺を使う場合:
+
+```bash
+PYTHONPATH=workflow_v2 .venv/bin/python \
+  -m agewec_v2.test_pipeline_1cut --cut-id 2 --seconds 0
+```
+
+成功時は動画に加えて、画像・Promptの伝達一致、尺、解像度、FPS、
+フレーム数、代表フレームの判定を
+`workflow_v2/work/pipeline_smoke/<run_id>/report.json`へ保存する。
+VLMによる意味的な画質評価はこのテストの対象外。
 
 ## テスト
 

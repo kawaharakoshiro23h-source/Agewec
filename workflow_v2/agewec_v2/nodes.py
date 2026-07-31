@@ -270,7 +270,15 @@ def _load_catalog() -> dict[str, Any]:
         return {}
 
 
-def _local_asset_path(image_url: str) -> str | None:
+def _local_asset_path(photo: dict[str, Any]) -> str | None:
+    # 1) カタログに local_path があればそれを優先（新命名 asset-XXX_... に対応）
+    rel = photo.get("local_path")
+    if rel:
+        candidate = PROJECT_ROOT / rel
+        if candidate.exists():
+            return str(candidate)
+    # 2) 後方互換: image_url のファイル名から推測（旧カタログ用）
+    image_url = photo.get("image_url", "")
     name = unquote(Path(urlparse(image_url).path).name)
     candidate = PROJECT_ROOT / "assets_dl" / name
     return str(candidate) if name and candidate.exists() else None
@@ -287,7 +295,7 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
     catalog = _load_catalog()
     candidates = []
     for index, photo in enumerate(catalog.get("photos", []), start=1):
-        local_path = _local_asset_path(photo.get("image_url", ""))
+        local_path = _local_asset_path(photo)
         candidates.append(
             {
                 "asset_id": f"asset-{index:03d}",

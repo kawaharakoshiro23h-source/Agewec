@@ -7,5 +7,7 @@ camera movement, motion intensity, and continuity rules. Explain why each move
 fits the cut and how it follows camera_intent; provide deviation_reason when it
 intentionally departs from the global intent. Keep real Kitakyushu architecture
 and geography stable. Do not choose width, height, frames, fps, steps, model,
-workflow node IDs, or a generation profile. When target_cut_id is supplied,
-return only that cut because all other approved shots are locked.
+workflow node IDs, or a generation profile. Return exactly one shot for EVERY
+cut in the storyboard, covering all cut IDs (do not omit any cut). Only when
+target_cut_id is supplied, return just that one cut because all other approved
+shots are locked.

@@ -62,12 +62,20 @@ def _decision_from_user(payload: dict[str, Any]) -> dict[str, Any]:
                 decision["project_updates"] = {
                     "target_duration_seconds": float(duration)
                 }
-        if payload.get("phase") == "director":
+        if payload.get("phase") in {
+            "asset_curator",
+            "director",
+            "support_video_creator",
+        }:
             cut_id = input(
                 "  対象カットID（全体修正はEnter）: "
             ).strip()
             if cut_id:
                 decision["target_cut_id"] = int(cut_id)
+        if payload.get("phase") in {
+            "director",
+            "support_video_creator",
+        }:
             correction_type = input(
                 "  修正種別 [direction/asset/storyboard] "
                 "（directionはEnter）: "

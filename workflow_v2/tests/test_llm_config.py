@@ -14,8 +14,10 @@ class LLMConfigTest(unittest.TestCase):
             os.environ,
             {
                 "AGEWEC_LLM_PROVIDER": "lmstudio",
+                "AGEWEC_LLM_BASE_URL": "http://127.0.0.1:1234/v1",
                 "AGEWEC_LLM_MODEL": "local-model",
-                "AGEWEC_LLM_API_KEY": "",
+                "AGEWEC_LLM_API_KEY": "lm-studio",
+                "AGEWEC_LLM_TOKEN_PARAMETER": "max_tokens",
             },
             clear=False,
         ):
@@ -31,7 +33,9 @@ class LLMConfigTest(unittest.TestCase):
                 "AGEWEC_LLM_PROVIDER": "openai",
                 "AGEWEC_LLM_BASE_URL": "https://api.openai.com/v1",
                 "AGEWEC_LLM_API_KEY": "test-key",
-                "AGEWEC_LLM_MODEL": "cloud-model",
+                "AGEWEC_LLM_MODEL": "gpt-4o-mini",
+                "AGEWEC_LLM_TOKEN_PARAMETER": "max_completion_tokens",
+                "AGEWEC_LLM_PRICING_MODEL": "gpt-4o-mini",
             },
             clear=False,
         ):

@@ -5,4 +5,10 @@ The sum of every cut's seconds must equal total_seconds and should match the tar
 duration supplied in context. For the final submission, default every cut to
 media_requirement=video_required unless the approved concept explicitly requires
 an intentional still. Describe time_of_day, visual_role, location, and subject for
-asset matching. Narration must fit each cut. Use unique positive integer cut IDs.
+asset matching. Narration must fit each cut.
+
+All narration must be natural Japanese only. Do not write narration in English,
+romaji, or bilingual form. Keep each narration concise enough to be spoken within
+its cut duration. Other technical fields may use English when useful.
+
+Use unique positive integer cut IDs.
