@@ -166,6 +166,38 @@ def generate_mock_video(
     return result
 
 
+def downscale_image(
+    source_path: str | Path,
+    destination_path: str | Path,
+    *,
+    max_edge: int = 1280,
+    quality: int = 4,
+) -> str:
+    """レビュー・提出Package用に画像を縮小する。
+
+    元画像は最大20MB規模になるため、長辺 max_edge px へ収める。
+    原本は変更せず、追跡は sha256 / source_url 側で担保する。
+    """
+    destination = Path(destination_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        _binary("ffmpeg"),
+        "-y",
+        "-i",
+        str(source_path),
+        "-vf",
+        (
+            f"scale='if(gt(iw,ih),min({max_edge},iw),-2)'"
+            f":'if(gt(iw,ih),-2,min({max_edge},ih))'"
+        ),
+        "-q:v",
+        str(quality),
+        str(destination),
+    ]
+    run_media_command(command, timeout=120)
+    return str(destination)
+
+
 def extract_representative_frames(
     source_path: str | Path,
     output_dir: str | Path,

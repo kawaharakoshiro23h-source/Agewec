@@ -1,4 +1,14 @@
-"""Runtime nodes for Phase 05.5 through Phase 10."""
+"""Runtime nodes for Phase 05.5 through Phase 10.
+
+【本番経路: 現役】実処理の中核（Phase 05.5〜10）。
+
+    呼ばれる側: nodes_runtime
+    担当      : Support Video Creator / 動画生成(ComfyUI) / Cut QA(ffprobe)
+                / Post Production(FFmpeg結合) / Review Board / Provenance
+
+秒数→フレーム数変換（8n+1制約）、ComfyUI呼び出し、FFmpegによる正規化・結合、
+提出パッケージ生成をここで行う。Post Production は `ffmpeg_executed` を返す（実行済み）。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -13,11 +23,14 @@ from typing import Any
 
 from . import nodes as deterministic
 from . import nodes_llm as llm_nodes
+from . import review_page
+from . import timing
 from .backends import ComfyClient, ComfyGenerationRequest
 from .media_tools import (
     MediaToolError,
     concat_video_clips,
     decode_check,
+    downscale_image,
     extract_representative_frames,
     generate_mock_video,
     image_to_video_clip,
@@ -43,8 +56,27 @@ def _json_write(path: Path, value: Any) -> None:
     )
 
 
-def _stable_seed(run_id: str, cut_id: int) -> int:
-    digest = hashlib.sha256(f"{run_id}:{cut_id}".encode()).digest()
+def _attempt_json_path(
+    state: WorkflowState,
+    cut_id: int,
+    attempt: int,
+    kind: str,
+) -> Path:
+    """カット内のattempt別メタデータJSONの保存先を返す。"""
+    return deterministic._cut_path(
+        state,
+        cut_id,
+        f"attempt_{int(attempt):02d}_{kind}.json",
+    )
+
+
+def _stable_seed(run_id: str, cut_id: int, attempt: int = 0) -> int:
+    """run_id・cut_id・試行回数から決定論的なseedを作る。
+
+    attempt を含めることで、同じ条件での「再生成」が別の結果になる。
+    attempt が同じなら常に同じseed＝再現性は保たれる。
+    """
+    digest = hashlib.sha256(f"{run_id}:{cut_id}:{attempt}".encode()).digest()
     return int.from_bytes(digest[:4], "big") % 2_147_483_647
 
 
@@ -157,7 +189,11 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
             "frames": frames,
             "steps": int(profile.get("steps", 20)),
             "fps": fps,
-            "seed": _stable_seed(str(state.get("run_id", "")), cut_id),
+            "seed": _stable_seed(
+                str(state.get("run_id", "")),
+                cut_id,
+                int(state.get("cut_attempts", {}).get(str(cut_id), 0)),
+            ),
             "requested_seconds": seconds,
             "actual_seconds": round(frames / fps, 4),
             "estimated_cost_class": cost_class,
@@ -245,7 +281,7 @@ def _generate_comfy(
         base_url=str(comfy.get("base_url", "http://127.0.0.1:8188")),
         workflow_path=workflow_path,
         input_mapping=comfy.get("inputs", {}),
-        output_dir=deterministic._work_path(state, "production"),
+        output_dir=deterministic._cut_path(state, int(request["cut_id"])),
         poll_interval=float(comfy.get("poll_interval_seconds", 2)),
         timeout=float(comfy.get("timeout_seconds", 1800)),
     )
@@ -260,7 +296,9 @@ def _generate_comfy(
             steps=int(request["steps"]),
             fps=int(request["fps"]),
             seed=int(request["seed"]),
-            file_prefix=f"agewec_v2_cut_{int(request['cut_id']):02d}",
+            file_prefix=(
+                f"attempt_{int(request.get('attempt', 1)):02d}"
+            ),
         )
     )
 
@@ -301,6 +339,19 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
     attempts = dict(state.get("cut_attempts", {}))
     attempt = int(attempts.get(str(current), 0)) + 1
     attempts[str(current)] = attempt
+
+    # 「同じ条件で再生成」は support_video_creator を通らず直接ここへ戻るため、
+    # 生成直前に今回の attempt から seed を引き直す。
+    # これがないと再生成しても同じseed＝同じ映像になる。
+    request = {
+        **request,
+        "seed": _stable_seed(
+            str(state.get("run_id", "")), current, attempt - 1
+        ),
+        "attempt": attempt,
+    }
+    requests[str(current)] = request
+
     limits = state.get("config", {}).get("execution_limits", {})
     max_per_cut = int(limits.get("max_generation_attempts_per_cut", 2))
     max_total = int(limits.get("max_total_production_attempts", 20))
@@ -366,8 +417,22 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
         return update
 
     started = time.monotonic()
-    output_dir = deterministic._work_path(state, "production")
+    output_dir = deterministic._cut_path(state, current)
     output_dir.mkdir(parents=True, exist_ok=True)
+    # このカットの入力を run 内に残す（何を使って生成したかを追跡できるように）
+    _json_write(output_dir / "request.json", request)
+    _json_write(
+        _attempt_json_path(state, current, attempt, "request"),
+        request,
+    )
+    source_image = Path(str(request.get("image_path") or ""))
+    if source_image.exists():
+        destination = output_dir / f"source{source_image.suffix}"
+        if not destination.exists():
+            try:
+                shutil.copy2(source_image, destination)
+            except OSError:
+                pass
     backend = str(request["backend"])
     issues: list[str] = []
     generation: dict[str, Any] = {}
@@ -378,8 +443,8 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
             output_path = str(generation["output_path"])
         elif backend == "mock":
             output_path = str(
-                output_dir
-                / f"cut_{current:02d}_attempt_{attempt:02d}.mp4"
+                deterministic._cut_path(state, current)
+                / f"attempt_{attempt:02d}.mp4"
             )
             generation = generate_mock_video(
                 output_path,
@@ -444,6 +509,7 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
         {
             "current_cut_id": current,
             "cut_attempts": attempts,
+            "production_requests": requests,
             "production_artifacts": production_artifacts,
             "cut_results": cut_results,
             "generated_cut_ids": sorted(
@@ -470,6 +536,11 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
     current = int(current)
     artifact = state.get("production_artifacts", {}).get(str(current))
     request = state.get("production_requests", {}).get(str(current), {})
+    attempt = int(
+        (artifact or {}).get("attempt")
+        or request.get("attempt")
+        or state.get("cut_attempts", {}).get(str(current), 0)
+    )
     issues: list[dict[str, Any]] = []
     technical: dict[str, Any] = {}
     frames: list[str] = []
@@ -518,11 +589,7 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
             )
         frames = extract_representative_frames(
             artifact["path"],
-            deterministic._work_path(
-                state,
-                "qa",
-                f"cut_{current:02d}",
-            ),
+            deterministic._cut_path(state, current, "qa_frames"),
             count=int(
                 state.get("config", {})
                 .get("qa", {})
@@ -555,6 +622,9 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
     }[issue_class]
     qa = {
         "cut_id": current,
+        "attempt": attempt,
+        "seed": request.get("seed"),
+        "artifact_path": (artifact or {}).get("path"),
         "verdict": verdict,
         "issue_class": issue_class,
         "issues": issues,
@@ -617,12 +687,62 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
             "cut_results": cut_results,
         }
     )
+    # QA結果をカットのフォルダにも残す（run単位で追跡できるように）
+    try:
+        _json_write(deterministic._cut_path(state, current, "qa.json"), qa)
+        if attempt > 0:
+            _json_write(
+                _attempt_json_path(state, current, attempt, "qa"),
+                qa,
+            )
+    except OSError:
+        pass
+    # 人間が実物を見て判断できるよう、この時点でレビュー画面を更新する。
+    # 生成に失敗しても本体を止めない（あくまで補助的な可視化）。
+    try:
+        merged_state = {
+            **state,
+            **update,
+            "artifacts": list(state.get("artifacts", [])) + artifacts,
+        }
+        page = review_page.build_review_page(
+            merged_state,
+            deterministic._work_path(state, "review.html"),
+        )
+        update["cut_review_page"] = str(page)
+    except Exception as exc:  # noqa: BLE001 - 可視化の失敗は致命的ではない
+        update.setdefault("phase_results", {})
+        update["cut_review_page"] = None
+        print(f"[warn] レビュー画面の生成に失敗: {type(exc).__name__}: {exc}")
     return update
 
 
 def commit_cut_qa(state: WorkflowState) -> dict[str, Any]:
     current = int(state.get("current_cut_id") or 0)
     qa = state.get("cut_qa_results", {}).get(str(current), {})
+    # 人間がレビューで下した判断は、AIのQA判定より優先する。
+    # cut_id をキーにして保持し、他カットへ指示が漏れないようにする。
+    human_decisions = dict(state.get("human_cut_qa_decisions", {}))
+    human = human_decisions.get(str(current))
+    human_applied = None
+    if human:
+        qa = {
+            **qa,
+            "verdict": human.get("verdict", "revise"),
+            "recommended_route": human.get(
+                "route", qa.get("recommended_route", "human_review")
+            ),
+            "recommended_feedback": human.get(
+                "feedback", qa.get("recommended_feedback", "")
+            ),
+            "issue_class": human.get(
+                "issue_class", qa.get("issue_class", "human_review")
+            ),
+            "decided_by": "human",
+        }
+        human_applied = {**human, "cut_id": current}
+        # 使い終わった判断は破棄（次回の同カット再QAに残留させない）
+        human_decisions.pop(str(current), None)
     approved = {int(value) for value in state.get("approved_cut_ids", [])}
     failed = {int(value) for value in state.get("failed_cut_ids", [])}
     queue = [
@@ -632,6 +752,19 @@ def commit_cut_qa(state: WorkflowState) -> dict[str, Any]:
     context = dict(state.get("review_context", {}))
     feedback = dict(state.get("feedback", {}))
     route = qa.get("recommended_route", "human_review")
+    attempt = int(
+        qa.get("attempt")
+        or (artifacts.get(str(current)) or {}).get("attempt")
+        or state.get("production_requests", {})
+        .get(str(current), {})
+        .get("attempt", 0)
+        or state.get("cut_attempts", {}).get(str(current), 0)
+    )
+    seed = (
+        state.get("production_requests", {})
+        .get(str(current), {})
+        .get("seed")
+    )
 
     if qa.get("verdict") == "pass":
         approved.add(current)
@@ -680,8 +813,43 @@ def commit_cut_qa(state: WorkflowState) -> dict[str, Any]:
             "cut_id": current,
             "verdict": qa.get("verdict"),
             "route": route,
+            "decided_by": "human" if human_applied else "ai",
         }
     )
+    if human_applied:
+        events.append(
+            {
+                "t": round(time.time(), 3),
+                "type": "human_cut_decision_applied",
+                "cut_id": current,
+                "route": human_applied.get("route"),
+                "feedback": human_applied.get("feedback", ""),
+            }
+        )
+    # このカットに対する判断（誰が・何を選び・どこへ戻したか）を残す
+    try:
+        decision_record = {
+            "cut_id": current,
+            "attempt": attempt,
+            "seed": seed,
+            "verdict": qa.get("verdict"),
+            "route": route,
+            "decided_by": "human" if human_applied else "ai",
+            "feedback": qa.get("recommended_feedback", ""),
+            "issue_class": qa.get("issue_class", ""),
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _json_write(
+            deterministic._cut_path(state, current, "decision.json"),
+            decision_record,
+        )
+        if attempt > 0:
+            _json_write(
+                _attempt_json_path(state, current, attempt, "decision"),
+                decision_record,
+            )
+    except OSError:
+        pass
     return {
         "approved_cut_ids": sorted(approved),
         "failed_cut_ids": sorted(failed),
@@ -691,6 +859,7 @@ def commit_cut_qa(state: WorkflowState) -> dict[str, Any]:
         "review_context": context,
         "feedback": feedback,
         "cut_qa_route": route,
+        "human_cut_qa_decisions": human_decisions,
         "events": events,
     }
 
@@ -787,7 +956,7 @@ def post_production(state: WorkflowState) -> dict[str, Any]:
     tolerance = float(
         post_config.get("duration_tolerance_seconds", 0.25)
     )
-    output_dir = deterministic._work_path(state, "post")
+    output_dir = deterministic._work_path(state, "final")
     normalized_dir = output_dir / "normalized"
     output_dir.mkdir(parents=True, exist_ok=True)
     issues: list[str] = []
@@ -1744,6 +1913,73 @@ Review Boardの修正はPost Productionへ戻ります。</p></section>
 </body></html>"""
 
 
+def _sha256_of(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _copy_cut_sources(state: WorkflowState, package: Path) -> list[dict]:
+    """使用元画像（縮小）とカット別動画をPackageへコピーし、索引を返す。
+
+    元画像は最大20MB規模のためPackage肥大化を避けて長辺1280pxへ縮小する。
+    追跡性は asset_id / source_url / sha256（原本のもの）で担保する。
+    """
+    shots = {
+        int(s.get("id", s.get("cut_id", 0))): s
+        for s in state.get("phase_results", {})
+        .get("director", {})
+        .get("data", {})
+        .get("shots", [])
+    }
+    artifacts = state.get("production_artifacts", {})
+    src_dir = package / "artifacts" / "sources"
+    clip_dir = package / "artifacts" / "cuts"
+    index: list[dict[str, Any]] = []
+
+    for cut_id in sorted(set(shots) | {int(k) for k in artifacts}):
+        shot = shots.get(cut_id, {})
+        asset = shot.get("asset", {}) or {}
+        entry: dict[str, Any] = {
+            "cut_id": cut_id,
+            "asset_id": asset.get("asset_id"),
+            "title": asset.get("title"),
+            "source_url": asset.get("source_url"),
+            "detail_url": asset.get("detail_url"),
+            "original_local_path": asset.get("local_path"),
+            "original_sha256": asset.get("sha256"),
+            "selection_reason": asset.get("selection_reason"),
+        }
+        original = Path(str(asset.get("local_path") or ""))
+        if original.exists():
+            if not entry["original_sha256"]:
+                entry["original_sha256"] = _sha256_of(original)
+            src_dir.mkdir(parents=True, exist_ok=True)
+            preview = src_dir / f"cut_{cut_id:02d}_source{original.suffix}"
+            try:
+                downscale_image(str(original), str(preview), max_edge=1280)
+            except Exception:  # noqa: BLE001 - 縮小失敗時は原本をコピー
+                shutil.copy2(original, preview)
+            entry["preview_path"] = str(preview.relative_to(package))
+
+        clip = Path(str((artifacts.get(str(cut_id)) or {}).get("path") or ""))
+        if clip.exists():
+            clip_dir.mkdir(parents=True, exist_ok=True)
+            destination = clip_dir / f"cut_{cut_id:02d}{clip.suffix}"
+            shutil.copy2(clip, destination)
+            entry["clip_path"] = str(destination.relative_to(package))
+            entry["clip_sha256"] = _sha256_of(destination)
+        index.append(entry)
+
+    _json_write(package / "cut_sources.json", {"cuts": index})
+    return index
+
+
 def provenance_package(state: WorkflowState) -> dict[str, Any]:
     phase = "provenance"
     run_id = str(state.get("run_id") or f"run-{int(time.time())}")
@@ -1780,8 +2016,24 @@ def provenance_package(state: WorkflowState) -> dict[str, Any]:
         "reviews": state.get("reviews", []),
         "events": state.get("events", []),
         "artifacts": state.get("artifacts", []),
+        "phase_timings": state.get("phase_timings", {}),
+        "timing_summary": timing.summarize(state),
     }
     _json_write(package / "provenance.json", provenance)
+    _json_write(package / "timing_report.json", timing.summarize(state))
+
+    # run 直下にも実行履歴を残す（提出Packageとは別に、作業用の記録として）
+    run_dir = deterministic._work_path(state)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _json_write(run_dir / "state.json", provenance)
+    events_file = run_dir / "events.jsonl"
+    events_file.write_text(
+        "\n".join(
+            json.dumps(event, ensure_ascii=False)
+            for event in state.get("events", [])
+        ),
+        encoding="utf-8",
+    )
     _json_write(
         package / "storyboard.json",
         _result_data(state, "writer_storyboard"),
@@ -1833,6 +2085,10 @@ def provenance_package(state: WorkflowState) -> dict[str, Any]:
             shutil.copy2(source, destination)
             copied_qa.append(str(destination.relative_to(package)))
 
+    # 使用した元画像（レビュー用に縮小）とカット別の動画をPackageへ含める。
+    # 元画像の asset_id / source_url / sha256 は原本の証跡として必ず記録する。
+    source_index = _copy_cut_sources(state, package)
+
     required = [
         final_video,
         package / "provenance.json",
@@ -1843,6 +2099,7 @@ def provenance_package(state: WorkflowState) -> dict[str, Any]:
         package / "storyboard.json",
         package / "direction_plan.json",
         package / "review_summary.json",
+        package / "cut_sources.json",
     ]
     manifest_files = []
     for path in required:

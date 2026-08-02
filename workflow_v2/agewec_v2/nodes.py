@@ -1,8 +1,17 @@
 """Role nodes for the isolated AGEWEC v2 workflow.
 
-The current role outputs are deterministic scaffolding. Each function has a stable
-structured contract so an LLM/VLM/tool implementation can replace its internals
-without changing graph routing or Review Gates.
+【本番経路: 現役（ただし単独では使わない）】決定論フォールバック＋共有ヘルパ。
+
+    呼ばれる側: nodes_llm（`deterministic` として）／pipeline_runtime
+    直接グラフに接続してはいけない。グラフが使うのは nodes_runtime。
+
+役割:
+  1. LLM未使用/失敗時の決定論フォールバック実装
+  2. 共有ヘルパ（_load_catalog / _local_asset_path / _complete / AWARD_GENRES 等）
+
+各関数は安定した構造化契約を持つので、LLM/VLM/ツール実装に内部を差し替えても
+グラフのルーティングやReview Gateに影響しない。
+※ 本番から呼ばれない旧実装が一部残る（[LEGACY 未使用] 印を参照）。
 """
 from __future__ import annotations
 
@@ -28,11 +37,28 @@ AWARD_GENRES = {
 
 
 def _work_path(state: WorkflowState, *parts: str) -> Path:
-    relative = state.get("config", {}).get("paths", {}).get("work_dir", "work")
+    """実行単位（run_id）で分離された作業ディレクトリのパスを返す。
+
+        work/runs/<run_id>/<parts...>
+
+    実行ごとにフォルダを分けることで、過去runとの上書き・混同を防ぐ。
+    複数モデルを比較する際も、成果物が互いに潰し合わない。
+    run_id が無い場合（単体テスト等）は従来どおり work/ 直下を使う。
+    """
+    paths = state.get("config", {}).get("paths", {})
+    relative = paths.get("work_dir", "work")
     path = WORKFLOW_ROOT / relative
+    run_id = str(state.get("run_id") or "")
+    if run_id:
+        path = path / paths.get("runs_dir", "runs") / run_id
     for part in parts:
         path /= part
     return path
+
+
+def _cut_path(state: WorkflowState, cut_id: int, *parts: str) -> Path:
+    """カット単位のディレクトリ（work/runs/<run_id>/cuts/cut_XX/...）。"""
+    return _work_path(state, "cuts", f"cut_{int(cut_id):02d}", *parts)
 
 
 def _phase_feedback(state: WorkflowState, phase: str) -> str:
@@ -648,6 +674,11 @@ def visual_qa(state: WorkflowState) -> dict[str, Any]:
 
 
 def post_production(state: WorkflowState) -> dict[str, Any]:
+    """[LEGACY 未使用] 旧・編集計画のみ版（`ffmpeg_pending` を返す）。
+
+    本番は `pipeline_runtime.post_production`（FFmpegで実結合＝`ffmpeg_executed`）。
+    互換のため残置。新しい実装はこちらに追加しないこと。
+    """
     phase = "post_production"
     production_artifacts = state["phase_results"]["image_video_production"].get(
         "artifacts", []

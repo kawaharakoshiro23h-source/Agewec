@@ -1,8 +1,13 @@
 """LLM-connected role nodes.
 
-When llm.enabled is false these nodes delegate to the deterministic scaffolding in
-nodes.py. When enabled, role decisions use RoleRunner while media/file operations
-remain deterministic tools.
+【本番経路: 現役】役割別のLLM実行（Executive Producer〜Review Board）。
+
+    呼ばれる側: nodes_runtime / pipeline_runtime
+    使う側    : nodes.py（`deterministic` としてフォールバック・共有ヘルパを利用）
+
+llm.enabled が false のとき、または LLM 呼び出しに失敗したときは、nodes.py の
+決定論版へ委譲する。判断はRoleRunner（LLM）が、メディア/ファイル操作は決定論ツールが担う。
+※ このファイル内に本番から呼ばれない旧実装が一部残る（[LEGACY 未使用] 印を参照）。
 """
 from __future__ import annotations
 
@@ -275,6 +280,50 @@ def _normalize_japanese_narration(
     return fitted, reasons
 
 
+# --- time_of_day 語彙の正規化 -------------------------------------------------
+# LLMは「朝」「morning」「夕暮れ」など多様な表記を返す。下流（素材選定・レポート）は
+# 正規化済みの day / dusk / night / unspecified だけを扱う。
+TIME_OF_DAY_VALUES = ("day", "dusk", "night", "unspecified")
+
+_TOD_ALIASES: dict[str, str] = {}
+for _canonical, _aliases in {
+    # 朝・早朝は day へ丸める（素材が薄く、独立させると候補が枯れるため）
+    "day": (
+        "day", "daytime", "daylight", "morning", "dawn", "sunrise", "noon",
+        "midday", "afternoon", "昼", "日中", "昼間", "朝", "早朝", "午前",
+        "午後", "夜明け", "明け方", "日の出",
+    ),
+    "dusk": (
+        "dusk", "evening", "sunset", "twilight", "goldenhour", "bluehour",
+        "夕", "夕方", "夕暮れ", "夕景", "日没", "黄昏", "たそがれ", "薄暮",
+    ),
+    "night": (
+        "night", "nighttime", "midnight", "夜", "夜間", "深夜", "夜景",
+        "ライトアップ", "イルミネーション",
+    ),
+}.items():
+    for _alias in _aliases:
+        _TOD_ALIASES[_alias] = _canonical
+
+
+def normalize_time_of_day(raw: Any) -> str:
+    """任意の time_of_day 表記を day / dusk / night へ正規化する。
+
+    判定できない表現は無理に分類せず ``unspecified`` を返し、呼び出し側で
+    警告付きフォールバックへ回す。
+    """
+    if not raw:
+        return "unspecified"
+    text = str(raw).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+    if text in _TOD_ALIASES:
+        return _TOD_ALIASES[text]
+    # 部分一致（"early morning" / "夜の街" のような複合表記を拾う）
+    for alias, canonical in _TOD_ALIASES.items():
+        if alias in text:
+            return canonical
+    return "unspecified"
+
+
 def _rescale_cut_durations(
     cuts: list[dict[str, Any]],
     *,
@@ -434,6 +483,24 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
                 )
         if narration_issues:
             raise ValueError("; ".join(narration_issues))
+        # time_of_day をここで一度だけ正規化する（下流は正規化済みの値のみ扱う）
+        time_of_day_normalizations: list[dict[str, Any]] = []
+        for cut in cuts:
+            raw = cut.get("time_of_day")
+            canonical = normalize_time_of_day(raw)
+            if str(raw or "") != canonical:
+                time_of_day_normalizations.append(
+                    {
+                        "cut_id": cut.get("id"),
+                        "raw": raw,
+                        "normalized": canonical,
+                    }
+                )
+            cut["time_of_day"] = canonical
+        unspecified_cuts = [
+            cut.get("id") for cut in cuts
+            if cut.get("time_of_day") == "unspecified"
+        ]
         return {
             **data,
             "cuts": cuts,
@@ -442,6 +509,8 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
             "duration_adjustment": duration_adjustment,
             "narration_language": narration_language,
             "narration_adjustments": narration_adjustments,
+            "time_of_day_normalizations": time_of_day_normalizations,
+            "time_of_day_unspecified_cut_ids": unspecified_cuts,
         }
 
     return _run_role(
@@ -486,13 +555,7 @@ def _asset_candidates(state: WorkflowState) -> list[dict[str, Any]]:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk)
             sha256 = digest.hexdigest()
-        night_terms = ("夜", "ライトアップ", "イルミネーション")
-        time_of_day = (
-            "night"
-            if any(term in title for term in night_terms)
-            or "イルミネーション・夜景" in genres
-            else "day_or_unspecified"
-        )
+        time_of_day = _asset_time_of_day(title, genres)
         candidates.append(
             {
                 "asset_id": f"asset-{index:03d}",
@@ -528,20 +591,52 @@ def _asset_candidates(state: WorkflowState) -> list[dict[str, Any]]:
 _CLIMAX_ROLES = {"climax", "ending", "final", "finale", "closing"}
 
 
+_ASSET_DUSK_TERMS = ("夕", "夕暮", "夕景", "サンセット", "黄昏", "日没", "薄暮")
+_ASSET_NIGHT_TERMS = ("夜", "ライトアップ", "イルミネーション")
+
+
+def _asset_time_of_day(title: str, genres: list[str]) -> str:
+    """素材（写真）の時間帯を night / dusk / unknown_or_day に分類する。
+
+    タイトルとジャンルからの推定であり、断定ではない。判定できないものは
+    ``unknown_or_day`` として扱う（昼として使えることが多いため）。
+    """
+    if any(term in title for term in _ASSET_DUSK_TERMS):
+        return "dusk"
+    if any(term in title for term in _ASSET_NIGHT_TERMS):
+        return "night"
+    if "イルミネーション・夜景" in genres:
+        return "night"
+    return "unknown_or_day"
+
+
 def _tod_eval(cut_tod: str, cand_tod: str) -> tuple[bool, int]:
     """time_of_day の相性（最優先シグナル）。(除外するか, 加点) を返す。
 
-    完全一致→優先 / dusk↔day,night→許容 / day↔night→原則除外 / unspecified→減点残し。
-    候補側は 'night' か 'day_or_unspecified' の2値。
+    カット側は正規化済み（day / dusk / night / unspecified）。
+    素材側は night / dusk / unknown_or_day。
+    完全一致→優先 / 隣接（dusk↔day,night）→許容 / day↔night→原則除外 /
+    unspecified→減点して残す。
     """
     cand_night = cand_tod == "night"
+    cand_dusk = cand_tod == "dusk"
     if cut_tod == "day":
-        return (True, 0) if cand_night else (False, 4)      # day↔night 除外
+        if cand_night:
+            return (True, 0)          # 昼カットに夜景は除外（最重要）
+        if cand_dusk:
+            return (False, 1)         # 隣接: 許容するが低め
+        return (False, 4)             # unknown_or_day
     if cut_tod == "night":
-        return (False, 6) if cand_night else (False, -2)    # 不一致は減点して残す
+        if cand_night:
+            return (False, 6)
+        if cand_dusk:
+            return (False, 2)         # 隣接: 許容
+        return (False, -2)            # 昼素材は減点して残す
     if cut_tod == "dusk":
-        return (False, 2)                                    # 昼夜どちらも許容
-    return (False, 0)                                        # unspecified
+        if cand_dusk:
+            return (False, 6)         # 完全一致を最優先
+        return (False, 2)             # 昼夜どちらも隣接として許容
+    return (False, 0)                 # unspecified: 素通り（緩和側で拾う）
 
 
 def _location_score(cut_location: str, areas: list[str]) -> int:
@@ -572,6 +667,7 @@ def _shortlist_candidates(cuts: list[dict[str, Any]],
     local = [c for c in candidates if c.get("local_available")]  # ハードフィルタ
     award_genre = deterministic.AWARD_GENRES.get(award)
     result: dict[str, dict[str, Any]] = {}
+    relaxed_cut_ids: list[int] = []
 
     for cut in cuts:
         cut_id = int(cut["id"])
@@ -581,7 +677,7 @@ def _shortlist_candidates(cuts: list[dict[str, Any]],
 
         scored, relaxed = [], []
         for c in local:
-            excluded, s = _tod_eval(cut_tod, c.get("time_of_day", "day_or_unspecified"))
+            excluded, s = _tod_eval(cut_tod, c.get("time_of_day", "unknown_or_day"))
             s += _location_score(cut_loc, c.get("areas", []))
             if award_genre and award_genre in c.get("genres", []):
                 s += 3 if role in _CLIMAX_ROLES else 1  # 賞ジャンルはclimaxで強く
@@ -589,7 +685,11 @@ def _shortlist_candidates(cuts: list[dict[str, Any]],
             relaxed.append((s, c))
             if not excluded:
                 scored.append((s, c))
-        pool = scored or relaxed  # 除外で枯れたら緩和して残す
+        # 時間帯の除外で候補が枯れた場合は停止せず、隣接時間帯まで緩和する
+        pool = scored
+        if not pool:
+            pool = relaxed
+            relaxed_cut_ids.append(cut_id)
         pool.sort(key=lambda x: (-x[0], x[1]["asset_id"]))
 
         # 多様性キャップ: 同一エリア先頭 / タイトル接頭辞は各2件まで
@@ -621,7 +721,10 @@ def _shortlist_candidates(cuts: list[dict[str, Any]],
             r["eligible_cut_ids"].append(cut_id)
             r["scores_by_cut"][str(cut_id)] = int(score)
 
-    return list(result.values())
+    shortlisted = list(result.values())
+    # 緩和が発生したカットを呼び出し側へ伝える（停止させず警告に留めるため）
+    _shortlist_candidates.last_relaxed_cut_ids = relaxed_cut_ids
+    return shortlisted
 
 
 def _compact_asset_candidates_for_llm(
@@ -807,6 +910,11 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
     new_assignments: dict[int, dict[str, Any]] = {}
     blocking: list[str] = []
     warnings: list[str] = []
+    # 時間帯が厳密一致しないため隣接時間帯へ緩和したカットを警告として残す
+    for relaxed_id in getattr(_shortlist_candidates, "last_relaxed_cut_ids", []):
+        warnings.append(
+            f"cut {relaxed_id}: 時間帯が一致する素材がないため隣接時間帯へ緩和"
+        )
     for cut_id in selection_cut_ids:
         cut = cut_map[cut_id]
         ranked = _ranked_candidates_for_cut(candidates, cut_id)
@@ -1249,6 +1357,11 @@ def visual_qa(state: WorkflowState) -> dict[str, Any]:
 
 
 def post_production(state: WorkflowState) -> dict[str, Any]:
+    """[LEGACY 未使用] 旧・LLMで編集計画のみ作る版（`ffmpeg_pending`）。
+
+    本番は `pipeline_runtime.post_production`（FFmpegで実結合＝`ffmpeg_executed`）。
+    互換のため残置。新しい実装はこちらに追加しないこと。
+    """
     production_result = _result_data(state, "image_video_production")
     if not production_result:
         return deterministic._complete(

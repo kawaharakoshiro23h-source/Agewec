@@ -1,4 +1,13 @@
-"""Canonical runtime node exports for the guarded workflow."""
+"""Canonical runtime node exports for the guarded workflow.
+
+【本番経路: 正】graph_safe が読み込むノードの入口。
+
+    呼ばれる側: graph_safe.py
+    使う側    : nodes_llm（役割別LLM）／pipeline_runtime（実処理）
+
+企画系フェーズは `nodes_llm` を、生成・QA・編集・証跡は `pipeline_runtime` を束ねる。
+新しいノードを足す場合は、実装を上記2つに置き、ここから公開する。
+"""
 from __future__ import annotations
 
 from typing import Any

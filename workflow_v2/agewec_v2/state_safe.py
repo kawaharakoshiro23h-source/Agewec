@@ -8,6 +8,9 @@ from .state import WorkflowState
 
 class SafeWorkflowState(WorkflowState, total=False):
     started_at: float
+    phase_timings: dict[str, Any]
+    human_cut_qa_decisions: dict[str, Any]
+    cut_review_page: str
     transition_count: int
     pending_phase: str
     guard_route: str

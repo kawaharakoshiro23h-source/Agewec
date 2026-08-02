@@ -1,8 +1,9 @@
 """Public workflow graph entry point.
 
-The guarded topology is the canonical graph. Keeping this module as a thin
-compatibility facade prevents older imports from bypassing execution limits and
-the phase-aware H2 retry routes.
+【互換用ファサード】実体は graph_safe.py（本番経路: 正）。
+
+このモジュールは古いimportが実行上限やH2差し戻し経路を迂回しないための薄い
+互換層。新しいコードは `graph_safe.build_graph` を直接使うこと。
 """
 from __future__ import annotations
 

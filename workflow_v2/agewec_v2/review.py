@@ -64,6 +64,7 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
             "target_cut_id": None,
             "correction_type": "",
             "project_updates": {},
+            "cut_route": "",
         }
     if isinstance(value, dict):
         action = value.get("action", "approve")
@@ -83,6 +84,7 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
             "target_cut_id": target_cut_id,
             "correction_type": str(value.get("correction_type") or ""),
             "project_updates": project_updates,
+            "cut_route": str(value.get("cut_route") or ""),
         }
     return {
         "action": "approve",
@@ -90,6 +92,7 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
         "target_cut_id": None,
         "correction_type": "",
         "project_updates": {},
+        "cut_route": "",
     }
 
 
@@ -196,6 +199,20 @@ def make_review_gate(
                 ),
             },
         }
+        if phase == "cut_visual_qa":
+            current = state.get("current_cut_id")
+            payload.update(
+                {
+                    "cut_id": current,
+                    "review_page": state.get("cut_review_page"),
+                    "cut_routes": {
+                        "director": "演出・プロンプトを修正して再生成",
+                        "asset_curator": "素材を変更して再生成",
+                        "support_video_creator": "生成設定を変更して再生成",
+                        "image_video_production": "同じ条件で再生成(seed変更)",
+                    },
+                }
+            )
         if phase == "final_submission":
             post = (
                 state.get("phase_results", {})
@@ -289,7 +306,7 @@ def make_review_gate(
             "retry_with_feedback": "retry",
             "abort": "abort",
         }[action]
-        return {
+        update = {
             "review_route": route,
             "review_target_phase": target_phase,
             "feedback": feedback,
@@ -299,6 +316,22 @@ def make_review_gate(
             "events": events,
             "aborted": action == "abort",
         }
+        # Cut QAレビューで人間が差し戻し先を選んだ場合、その判断を
+        # cut_id 別に保存する。commit_cut_qa がAI判定より優先して読む。
+        if phase == "cut_visual_qa" and decision.get("cut_route"):
+            current = state.get("current_cut_id")
+            if current is not None:
+                decisions = dict(state.get("human_cut_qa_decisions", {}))
+                decisions[str(int(current))] = {
+                    "verdict": "revise",
+                    "route": decision["cut_route"],
+                    "feedback": decision.get("feedback", ""),
+                    "issue_class": decision.get(
+                        "correction_type", "human_review"
+                    ),
+                }
+                update["human_cut_qa_decisions"] = decisions
+        return update
 
     review_gate.__name__ = f"review_{phase}"
     return review_gate

@@ -1,4 +1,13 @@
-"""Guarded LangGraph topology with bounded per-cut production loops."""
+"""Guarded LangGraph topology with bounded per-cut production loops.
+
+【本番経路: 正】これが実際に実行されるグラフ定義。
+
+    run.py → graph_safe.build_graph() → nodes_runtime → pipeline_runtime
+                                                      → nodes_llm → nodes
+
+ノードの実体は `nodes_runtime` から取り込む（`from . import nodes_runtime as nodes`）。
+各フェーズの後段に Review Gate、前段に Execution Guard を挿入する。
+"""
 from __future__ import annotations
 
 from typing import Callable
@@ -15,6 +24,7 @@ from .execution_limits import (
 from .review import make_review_gate, review_router
 from .state import PHASES
 from .state_safe import SafeWorkflowState
+from .timing import with_phase_timing
 
 
 def _guard_name(phase: str) -> str:
@@ -27,7 +37,7 @@ def _add_guard(
     function: Callable,
 ) -> None:
     graph.add_node(_guard_name(phase), make_execution_guard(phase))
-    graph.add_node(phase, function)
+    graph.add_node(phase, with_phase_timing(phase, function))
     graph.add_conditional_edges(
         _guard_name(phase),
         guard_router,
@@ -252,7 +262,10 @@ def build_graph(checkpointer=None):
         ),
     )
     graph.add_edge("cut_visual_qa", "review_cut_visual_qa")
-    graph.add_node("commit_cut_qa", nodes.commit_cut_qa)
+    graph.add_node(
+        "commit_cut_qa",
+        with_phase_timing("commit_cut_qa", nodes.commit_cut_qa),
+    )
     graph.add_conditional_edges(
         "review_cut_visual_qa",
         _cut_review_router,
