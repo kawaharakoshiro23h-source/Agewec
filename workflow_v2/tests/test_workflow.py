@@ -19,6 +19,8 @@ class WorkflowV2Test(unittest.TestCase):
         self.config = yaml.safe_load(
             (ROOT / "config.yaml").read_text(encoding="utf-8")
         )
+        # The end-to-end fixture intentionally exercises all six fallback cuts.
+        self.config["production"]["max_video_cuts_per_run"] = 6
 
     def test_review_policy_presets_and_override(self) -> None:
         config = copy.deepcopy(self.config)

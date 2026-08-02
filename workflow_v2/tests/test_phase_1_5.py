@@ -22,6 +22,9 @@ class PhaseOneToFiveTest(unittest.TestCase):
             (ROOT / "config.yaml").read_text(encoding="utf-8")
         )
         self.config["llm"] = {"enabled": False}
+        # Most phase-contract tests need multiple cuts. Cut-limit behavior is
+        # covered separately below.
+        self.config["production"]["max_video_cuts_per_run"] = 6
         self.state = {
             "run_id": "phase-1-5-test",
             "project": {
@@ -107,6 +110,29 @@ class PhaseOneToFiveTest(unittest.TestCase):
             self.assertNotIn("generation_profile", shot)
             self.assertTrue(shot["rationale"])
             self.assertTrue(shot["camera_intent_alignment"])
+
+    def test_storyboard_cut_limit_is_applied_before_downstream_phases(self) -> None:
+        self.config["production"]["max_video_cuts_per_run"] = 2
+        self.state["config"] = self.config
+        self._run_phase_one_to_five()
+
+        storyboard = self.state["phase_results"]["writer_storyboard"]["data"]
+        self.assertEqual(len(storyboard["cuts"]), 2)
+        self.assertEqual([cut["id"] for cut in storyboard["cuts"]], [1, 2])
+        self.assertEqual(
+            storyboard["cut_limit"]["selected_original_cut_ids"],
+            [1, 6],
+        )
+        self.assertAlmostEqual(
+            sum(cut["seconds"] for cut in storyboard["cuts"]),
+            40,
+        )
+        self.assertEqual(
+            len(
+                self.state["phase_results"]["director"]["data"]["shots"]
+            ),
+            2,
+        )
 
     def test_targeted_director_retry_locks_other_cuts(self) -> None:
         self._run_phase_one_to_five()

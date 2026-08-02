@@ -12,3 +12,6 @@ romaji, or bilingual form. Keep each narration concise enough to be spoken withi
 its cut duration. Other technical fields may use English when useful.
 
 Use unique positive integer cut IDs.
+If approved_upstream_context.storyboard_constraints.max_cuts is set, never
+output more cuts than that limit. Preserve the opening-to-climax story arc
+inside the limited number of cuts.

@@ -152,7 +152,9 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
             multiple=frame_multiple,
             offset=frame_offset,
         )
-        if frames > max_frames:
+        # LTX frame limits belong to the ComfyUI backend. Cloud adapters
+        # validate duration against their own model capabilities instead.
+        if backend == "comfy" and frames > max_frames:
             blocking.append(
                 f"cut {cut_id}: {frames} frames exceeds model max {max_frames}; "
                 "Writer / StoryboardまたはDirectorでカットを分割してください"
@@ -1440,8 +1442,8 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
     {
         "id": "executive_producer",
         "number": "01",
-        "title": "Executive Producer",
-        "kind": "LLM",
+        "title": "Executive Producer（統括プロデューサー：制作要件の定義）",
+        "kind": "AI（LLM）",
         "purpose": "制作依頼を、全工程が共有する目的・制約・成功基準へ変換する。",
         "input_source": "Project設定（人間が最初に指定）",
         "inputs": [
@@ -1451,13 +1453,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "対象視聴者、納品物、制約、成功基準を定義する。",
         "output": "ProjectBrief JSON",
-        "next": "Creative Director",
+        "next": "Creative Director（コンセプト設計）",
     },
     {
         "id": "creative_director",
         "number": "02",
-        "title": "Creative Director",
-        "kind": "LLM",
+        "title": "Creative Director（クリエイティブディレクター：コンセプト設計）",
+        "kind": "AI（LLM）",
         "purpose": "企画全体のコンセプト、色、トーン、カメラ意図を統一する。",
         "input_source": "Project設定 + ProjectBrief",
         "inputs": [
@@ -1467,13 +1469,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "作品タイトル、訴求、視覚言語、音響方針、全体演出意図を策定する。",
         "output": "CreativeConcept JSON",
-        "next": "Writer / Storyboard",
+        "next": "Writer / Storyboard（台本・絵コンテ）",
     },
     {
         "id": "writer_storyboard",
         "number": "03",
-        "title": "Writer / Storyboard",
-        "kind": "LLM + Code",
+        "title": "Writer / Storyboard（脚本・絵コンテ：台本とカット構成）",
+        "kind": "AI＋コード",
         "purpose": "コンセプトを、指定尺に収まる具体的なカット列へ分解する。",
         "input_source": "ProjectBrief + CreativeConcept",
         "inputs": [
@@ -1483,13 +1485,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "各カットの場面、秒数、ナレーション、時間帯、場所、被写体を構成し、コードで尺を補正する。",
         "output": "Storyboard JSON（cuts[]）",
-        "next": "Asset Curator",
+        "next": "Asset Curator（素材選定）",
     },
     {
         "id": "asset_curator",
         "number": "04",
-        "title": "Asset Curator",
-        "kind": "Code + LLM",
+        "title": "Asset Curator（素材キュレーター：公式素材の選定）",
+        "kind": "コード＋AI",
         "purpose": "各カットに、実在するAGEWEC公式写真を最低1枚割り当てる。",
         "input_source": "Storyboard + ローカル素材カタログ",
         "inputs": [
@@ -1498,13 +1500,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "コードが適合度を採点して写真を確定し、LLMは選定理由だけを説明する。",
         "output": "AssetManifest JSON（primary + alternatives）",
-        "next": "Director",
+        "next": "Director（演出設計）",
     },
     {
         "id": "director",
         "number": "05",
-        "title": "Director",
-        "kind": "LLM",
+        "title": "Director（監督：カット別の演出とプロンプト設計）",
+        "kind": "AI（LLM）",
         "purpose": "各カットと選定写真を、動画生成に必要な個別演出へ変換する。",
         "input_source": "CreativeConcept + Storyboard + AssetManifest",
         "inputs": [
@@ -1514,13 +1516,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "positive/negative prompt、カメラ移動、動きの強度、演出根拠を作る。",
         "output": "DirectionPlan JSON（shots[]）",
-        "next": "Support Video Creator",
+        "next": "Support Video Creator（生成条件の変換）",
     },
     {
         "id": "support_video_creator",
         "number": "05.5",
-        "title": "Support Video Creator",
-        "kind": "Code",
+        "title": "Support Video Creator（生成条件の変換：秒数→技術パラメータ）",
+        "kind": "コード（自動）",
         "purpose": "演出指示を、ComfyUIが実行できる技術パラメータへ安全に変換する。",
         "input_source": "DirectionPlan + Production設定",
         "inputs": [
@@ -1530,13 +1532,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "秒数をLTX互換フレーム数へ変換し、seedや出力設定を確定する。",
         "output": "ProductionRequest JSON（カット別）",
-        "next": "Image / Video Production",
+        "next": "Image / Video Production（映像生成）",
     },
     {
         "id": "image_video_production",
         "number": "06",
-        "title": "Image / Video Production",
-        "kind": "ComfyUI Tool",
+        "title": "Image / Video Production（映像生成：実写を起点にAIで動画化）",
+        "kind": "生成AI（動画）",
         "purpose": "確定済み画像とPromptから、カット単位の実MP4を生成する。",
         "input_source": "ProductionRequest",
         "inputs": [
@@ -1546,13 +1548,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "ComfyUI APIへ投入し、完了を待って生成動画と実行情報を保存する。",
         "output": "MediaArtifact（MP4 + generation metadata）",
-        "next": "Cut Visual QA",
+        "next": "Cut Visual QA（カット品質検査）",
     },
     {
         "id": "cut_visual_qa",
         "number": "07A",
-        "title": "Cut Visual QA",
-        "kind": "Code + Review Gate",
+        "title": "Cut Visual QA（カット品質検査：尺・破綻の確認と差し戻し）",
+        "kind": "コード＋人間確認",
         "purpose": "生成直後の各カットを検査し、問題の種類に応じて必要な工程だけへ戻す。",
         "input_source": "ProductionRequest + 生成MP4",
         "inputs": [
@@ -1562,13 +1564,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "デコード、尺、解像度を検査し、passまたは修正先を判定する。",
         "output": "CutQAResult JSON",
-        "next": "次カット / Director / Asset Curator / Support Video Creator",
+        "next": "合格→次カット ／ 不合格→Director（演出修正）・Asset Curator（素材変更）・Support Video Creator（条件変更）",
     },
     {
         "id": "visual_qa",
         "number": "07B",
-        "title": "Sequence Readiness QA",
-        "kind": "Code / LLM",
+        "title": "Sequence Readiness QA（全体整合検査：編集へ進めるかの判定）",
+        "kind": "コード／AI",
         "purpose": "全カットが揃い、最終編集へ進める状態かを確認する。",
         "input_source": "全CutQAResult + 全生成Artifact",
         "inputs": [
@@ -1578,13 +1580,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "欠落、不整合、未承認カットを検査して次の経路を決定する。",
         "output": "VisualQAResult JSON",
-        "next": "Post Production",
+        "next": "Post Production（編集・仕上げ）",
     },
     {
         "id": "post_production",
         "number": "08",
-        "title": "Post Production",
-        "kind": "FFmpeg Tool",
+        "title": "Post Production（編集・仕上げ：結合と最終尺の調整）",
+        "kind": "コード（FFmpeg）",
         "purpose": "承認済みカットを正規化・結合し、指定尺の最終MP4にする。",
         "input_source": "Storyboard + 承認済みMediaArtifact",
         "inputs": [
@@ -1594,13 +1596,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "各カットをトリム・正規化して結合し、最終動画を再検査する。",
         "output": "final_video.mp4 + EditManifest + TechnicalReport",
-        "next": "Review Board",
+        "next": "Review Board（審査会）",
     },
     {
         "id": "review_board",
         "number": "09",
-        "title": "Review Board",
-        "kind": "LLM / Human",
+        "title": "Review Board（審査会：提出水準に達したかの総合評価）",
+        "kind": "AI／人間",
         "purpose": "最終動画と制作要件を採点し、提出可否または修正を判断する。",
         "input_source": "最終MP4 + 技術QA + 上流成果物",
         "inputs": [
@@ -1610,13 +1612,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "AI採点または人間確認を行い、pass/reviseを返す。",
         "output": "ReviewBoardResult JSON",
-        "next": "Final Submission Review",
+        "next": "Final Submission Review（最終提出承認）",
     },
     {
         "id": "final_submission",
         "number": "H3",
-        "title": "Final Submission Review",
-        "kind": "Human / Policy Gate",
+        "title": "Final Submission Review（最終提出承認：人間による可否判断）",
+        "kind": "人間の承認",
         "purpose": "提出直前に最終動画と未解決事項を確認し、公開を承認する。",
         "input_source": "ReviewBoardResult + final_video.mp4",
         "inputs": [
@@ -1626,13 +1628,13 @@ _PHASE_PRESENTATION: tuple[dict[str, Any], ...] = (
         ],
         "process": "approve / retry_with_feedback / abortを選択する。",
         "output": "ReviewDecision",
-        "next": "Provenance",
+        "next": "Provenance & Submission Package（証跡・提出物）",
     },
     {
         "id": "provenance",
         "number": "10",
-        "title": "Provenance & Submission Package",
-        "kind": "Code",
+        "title": "Provenance & Submission Package（証跡・提出物：制作過程の記録と提出パッケージ）",
+        "kind": "コード（自動）",
         "purpose": "動画と全判断記録を、第三者が追跡できる提出Packageへまとめる。",
         "input_source": "全phase_results + reviews + events + artifacts",
         "inputs": [
@@ -1914,6 +1916,169 @@ def _process_markdown(state: WorkflowState, video_name: str) -> str:
     return "\n".join(lines)
 
 
+def _cut_media_paths(state: WorkflowState, cut_id: int) -> tuple[str | None, str | None]:
+    """提出Package内での（元画像, 生成動画）の相対パス。
+
+    実体は `_copy_cut_sources` が同じ命名で配置する。
+    """
+    shots = {
+        int(s.get("id", s.get("cut_id", 0))): s
+        for s in state.get("phase_results", {})
+        .get("director", {})
+        .get("data", {})
+        .get("shots", [])
+    }
+    asset = (shots.get(cut_id, {}) or {}).get("asset", {}) or {}
+    source = Path(str(asset.get("local_path") or ""))
+    source_rel = (
+        f"artifacts/sources/cut_{cut_id:02d}_source{source.suffix}"
+        if source.name
+        else None
+    )
+    clip = Path(
+        str(
+            (state.get("production_artifacts", {}).get(str(cut_id)) or {}).get(
+                "path"
+            )
+            or ""
+        )
+    )
+    clip_rel = (
+        f"artifacts/cuts/cut_{cut_id:02d}{clip.suffix}" if clip.name else None
+    )
+    return source_rel, clip_rel
+
+
+def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
+    """演出設計・映像生成の「実物」を並べたカードを返す。
+
+    テキストの羅列では「この写真にこの指示でこう動いた」が判断できないため、
+    元画像・プロンプト・カメラワーク・生成映像を1カットずつ並べる。
+    """
+    if phase not in {"director", "image_video_production"}:
+        return ""
+    results = state.get("phase_results", {})
+    shots = sorted(
+        results.get("director", {}).get("data", {}).get("shots", []),
+        key=lambda s: int(s.get("id", s.get("cut_id", 0))),
+    )
+    if not shots:
+        return ""
+    cuts = {
+        int(c.get("id", 0)): c
+        for c in results.get("writer_storyboard", {}).get("data", {}).get("cuts", [])
+    }
+    requests = state.get("production_requests", {})
+    qa_results = state.get("cut_qa_results", {})
+    attempts = state.get("cut_attempts", {})
+
+    box = (
+        "background:#fafbfc;border:1px solid #e2e6ec;border-radius:10px;"
+        "padding:12px 14px;margin-bottom:10px;"
+    )
+    label = "font-size:11px;color:#5b6570;margin:8px 0 2px;"
+    pre = (
+        "white-space:pre-wrap;background:#f0f3f7;border-radius:6px;"
+        "padding:8px;font-size:12px;margin:0;"
+    )
+    cards = []
+    for shot in shots:
+        cut_id = int(shot.get("id", shot.get("cut_id", 0)))
+        cut = cuts.get(cut_id, {})
+        asset = shot.get("asset", {}) or {}
+        source_rel, clip_rel = _cut_media_paths(state, cut_id)
+        request = requests.get(str(cut_id), {}) or {}
+        qa = qa_results.get(str(cut_id), {}) or {}
+        head = (
+            f"<div style='display:flex;align-items:baseline;gap:8px;"
+            f"flex-wrap:wrap;'><strong style='font-size:14px;'>Cut {cut_id}</strong>"
+            f"<span style='font-size:13px;'>{html.escape(str(cut.get('name', '')))}</span>"
+            f"<span style='font-size:11px;color:#8b95a1;'>"
+            f"{html.escape(str(cut.get('seconds', '')))}秒 / "
+            f"{html.escape(str(cut.get('time_of_day', '')))}</span></div>"
+        )
+
+        if phase == "director":
+            # 選んだ写真と、その写真に与える指示を並べる
+            media = (
+                f"<img src='{html.escape(source_rel)}' "
+                "style='width:100%;border-radius:8px;display:block;'>"
+                if source_rel
+                else "<span style='color:#8b95a1;font-size:12px;'>元画像なし</span>"
+            )
+            cards.append(
+                f"<div style='{box}'>{head}"
+                "<div style='display:grid;grid-template-columns:220px minmax(0,1fr);"
+                "gap:14px;margin-top:10px;'>"
+                f"<div>{media}"
+                f"<p style='{label}'>使用素材</p>"
+                f"<div style='font-size:12px;'>{html.escape(str(asset.get('title', '')))}"
+                f" <code>{html.escape(str(asset.get('asset_id', '')))}</code></div>"
+                "</div><div>"
+                f"<p style='{label}'>カメラワーク</p>"
+                f"<div style='font-size:13px;'>"
+                f"{html.escape(str(shot.get('camera_motion', '—')))}</div>"
+                f"<p style='{label}'>生成プロンプト</p>"
+                f"<pre style='{pre}'>"
+                f"{html.escape(str(shot.get('positive_prompt', '')))}</pre>"
+                f"<p style='{label}'>避ける表現</p>"
+                f"<pre style='{pre}'>"
+                f"{html.escape(str(shot.get('negative_prompt', '') or '—'))}</pre>"
+                f"<p style='{label}'>この演出を選んだ理由</p>"
+                f"<div style='font-size:12px;'>"
+                f"{html.escape(str(shot.get('rationale', '') or '—'))}</div>"
+                "</div></div></div>"
+            )
+        else:
+            # 元画像 → 生成映像 を並べ、生成条件とQA結果を添える
+            left = (
+                f"<img src='{html.escape(source_rel)}' "
+                "style='width:100%;border-radius:8px;display:block;'>"
+                if source_rel
+                else "<span style='color:#8b95a1;font-size:12px;'>元画像なし</span>"
+            )
+            right = (
+                f"<video src='{html.escape(clip_rel)}' controls "
+                "style='width:100%;border-radius:8px;display:block;background:#000;'>"
+                "</video>"
+                if clip_rel
+                else "<span style='color:#8b95a1;font-size:12px;'>未生成</span>"
+            )
+            verdict = str(qa.get("verdict", "—"))
+            issues = qa.get("issues", [])
+            issue_text = (
+                "<br>".join(
+                    html.escape(f"{i.get('code')}: {i.get('description')}")
+                    for i in issues
+                )
+                or "検出された問題はありません"
+            )
+            cards.append(
+                f"<div style='{box}'>{head}"
+                "<div style='display:grid;grid-template-columns:1fr 1fr;"
+                "gap:12px;margin-top:10px;'>"
+                f"<div><p style='{label}'>元画像</p>{left}</div>"
+                f"<div><p style='{label}'>生成された映像</p>{right}</div>"
+                "</div>"
+                f"<p style='{label}'>生成条件</p>"
+                "<div style='font-size:12px;color:#5b6570;'>"
+                f"{html.escape(str(request.get('width', '')))}×"
+                f"{html.escape(str(request.get('height', '')))} / "
+                f"{html.escape(str(request.get('fps', '')))}fps / "
+                f"seed {html.escape(str(request.get('seed', '')))} / "
+                f"試行 {html.escape(str(attempts.get(str(cut_id), 1)))}回目</div>"
+                f"<p style='{label}'>QA結果: {html.escape(verdict)}</p>"
+                f"<div style='font-size:12px;color:#5b6570;'>{issue_text}</div>"
+                "</div>"
+            )
+    title = "選定した写真と演出指示" if phase == "director" else "生成された映像"
+    return (
+        f"<div class='actual-row'><h4>{title}</h4>"
+        + "".join(cards)
+        + "</div>"
+    )
+
+
 def _process_html(state: WorkflowState, video_name: str) -> str:
     phase_results = state.get("phase_results", {})
     reviews = state.get("reviews", [])
@@ -1941,6 +2106,10 @@ def _process_html(state: WorkflowState, video_name: str) -> str:
                 else []
             )
         )
+        # 演出設計と映像生成は、文字列の羅列では判断できないため
+        # 実物（元画像・生成映像）を並べたカードを追加する。
+        if result:
+            actual = _phase_visual_cards(phase, state) + actual
         related_reviews = [
             review
             for review in reviews
@@ -2267,6 +2436,7 @@ def provenance_package(state: WorkflowState) -> dict[str, Any]:
     # 使用した元画像（レビュー用に縮小）とカット別の動画をPackageへ含める。
     # 元画像の asset_id / source_url / sha256 は原本の証跡として必ず記録する。
     source_index = _copy_cut_sources(state, package)
+
 
     required = [
         final_video,

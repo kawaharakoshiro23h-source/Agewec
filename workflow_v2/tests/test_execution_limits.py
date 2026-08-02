@@ -19,6 +19,8 @@ def autonomous_config() -> dict:
         (ROOT / "config.yaml").read_text(encoding="utf-8")
     )
     config["autonomy_preset"] = "custom"
+    # This suite verifies the historical six-cut transition budget.
+    config["production"]["max_video_cuts_per_run"] = 6
     config["review_policies"] = {phase: "never" for phase in PHASES}
     config["execution_limits"] = {
         "max_retries_per_phase": 2,

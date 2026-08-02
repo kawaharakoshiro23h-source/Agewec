@@ -232,7 +232,14 @@ class LLMIntegrationTest(unittest.TestCase):
         config = yaml.safe_load(
             (ROOT / "config_llm.yaml").read_text(encoding="utf-8")
         )
+        # Keep this fixture independent from the user-facing project brief.
+        config["project"] = {
+            "target_award": "夜景賞",
+            "theme": "北九州の夜景を紹介する",
+            "target_duration_seconds": 30,
+        }
         config["production"]["backend"] = "mock"
+        config["production"]["max_video_cuts_per_run"] = 2
         config["review_board"]["mode"] = "ai"
         config["final_submission"]["require_human"] = False
         config["autonomy_preset"] = "custom"

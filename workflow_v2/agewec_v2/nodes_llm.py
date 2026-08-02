@@ -410,6 +410,13 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
             blocking_issues=["ProjectBriefとCreativeConceptが必要"],
         )
 
+    max_cuts_value = (
+        state.get("config", {})
+        .get("production", {})
+        .get("max_video_cuts_per_run")
+    )
+    max_cuts = int(max_cuts_value) if max_cuts_value is not None else None
+
     def transform(data: dict[str, Any]) -> dict[str, Any]:
         target = float(
             state.get("project", {}).get("target_duration_seconds", 30)
@@ -427,8 +434,12 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
                 ),
             )
         )
-        cuts, duration_adjustment = _rescale_cut_durations(
+        limited_cuts, cut_limit = deterministic._limit_storyboard_cuts(
             data["cuts"],
+            max_cuts,
+        )
+        cuts, duration_adjustment = _rescale_cut_durations(
+            limited_cuts,
             target_seconds=target,
             warning_threshold_seconds=warning_threshold,
         )
@@ -504,6 +515,7 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
         return {
             **data,
             "cuts": cuts,
+            "cut_limit": cut_limit,
             "total_seconds": target,
             "duration_source": "project.target_duration_seconds",
             "duration_adjustment": duration_adjustment,
@@ -520,6 +532,12 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
             "project": state.get("project", {}),
             "project_brief": brief,
             "creative_concept": concept,
+            "storyboard_constraints": {
+                "max_cuts": max_cuts,
+                "instruction": (
+                    "Do not output more than max_cuts storyboard cuts."
+                ),
+            },
         },
         summary=lambda data: (
             f"{len(data['cuts'])}カット、約{data['total_seconds']}秒をLLMが構成"
