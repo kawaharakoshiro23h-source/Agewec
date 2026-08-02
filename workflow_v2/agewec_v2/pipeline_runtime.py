@@ -25,7 +25,16 @@ from . import nodes as deterministic
 from . import nodes_llm as llm_nodes
 from . import review_page
 from . import timing
-from .backends import ComfyClient, ComfyGenerationRequest
+from .backends import (
+    BudgetStatus,
+    ComfyClient,
+    ComfyGenerationRequest,
+    UnsupportedDurationError,
+    VideoCostGuard,
+    estimate_run_cost,
+    resolve_backend,
+    to_video_request,
+)
 from .media_tools import (
     MediaToolError,
     concat_video_clips,
@@ -229,12 +238,26 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         production_artifacts.pop(str(target_cut_id), None)
         cut_qa_results.pop(str(target_cut_id), None)
 
+    # H2（重い生成を始める直前のゲート）で、実行全体の概算費用を人間へ提示する。
+    # 以降の再生成では都度承認を求めず、上限超過の自動停止のみで守る。
+    cost_estimate = _run_cost_estimate(state, backend, requests)
+    blocking_or_warn = None
+    if cost_estimate and cost_estimate.get("error"):
+        # 尺がモデル上限を超える等、生成前に判明した問題は H2 で止める
+        blocking.append(f"生成条件エラー: {cost_estimate['error']}")
+    elif cost_estimate and cost_estimate.get("total_usd", 0) > 0:
+        blocking_or_warn = (
+            f"概算費用 ${cost_estimate['total_usd']:.2f}"
+            f"（{cost_estimate['model']} / {len(requests)}カット）"
+        )
+
     data = {
         "backend": backend,
         "profile_name": profile_name,
         "requests": requests,
         "request_count": len(requests),
         "targeted_revision_cut_id": target_cut_id,
+        "cost_estimate": cost_estimate,
         "frame_rule": {
             "multiple": frame_multiple,
             "offset": frame_offset,
@@ -244,11 +267,15 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
     update = deterministic._complete(
         state,
         phase,
-        summary=f"{len(requests)}カットのProductionRequestを構築",
+        summary=(
+            f"{len(requests)}カットのProductionRequestを構築"
+            + (f" / {blocking_or_warn}" if blocking_or_warn else "")
+        ),
         data=data,
         status="success" if not blocking else "error",
         confidence=1.0 if not blocking else 0.2,
         blocking_issues=blocking,
+        warnings=[blocking_or_warn] if blocking_or_warn else None,
     )
     update.update(
         {
@@ -301,6 +328,107 @@ def _generate_comfy(
             ),
         )
     )
+
+
+def _video_backend(state: WorkflowState, backend: str):
+    """設定名から動画バックエンドAdapterを返す。
+
+    state・出力先などバックエンド固有の依存はここで束縛するため、
+    呼び出し側は `adapter.generate(VideoRequest)` だけを知っていればよい。
+    """
+    config = state.get("config", {})
+    return resolve_backend(
+        backend,
+        state=state,
+        generate_comfy=_generate_comfy,
+        generate_mock_video=generate_mock_video,
+        output_path_for=lambda cut_id, attempt: (
+            deterministic._cut_path(state, cut_id)
+            / f"attempt_{attempt:02d}.mp4"
+        ),
+        runway_config=config.get("runway", {}),
+        model=str(config.get("production", {}).get("model") or "") or None,
+    )
+
+
+def _run_cost_estimate(
+    state: WorkflowState, backend: str, requests: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """H2で提示する、実行全体の概算費用。無料バックエンドでは None。"""
+    try:
+        adapter = _video_backend(state, backend)
+        caps = adapter.capabilities(
+            str((requests[0] if requests else {}).get("model") or "") or None
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if caps.cost_per_second_usd <= 0:
+        return None
+    cuts = [
+        {
+            "id": request.get("cut_id"),
+            "seconds": float(
+                request.get("requested_seconds")
+                or request.get("actual_seconds", 0)
+            ),
+        }
+        for request in requests
+    ]
+    try:
+        return estimate_run_cost(caps, cuts)
+    except UnsupportedDurationError as exc:
+        return {"model": caps.model, "total_usd": 0.0, "error": str(exc)}
+
+
+def _video_budget(state: WorkflowState, backend: str, request: dict[str, Any]):
+    """課金前ガード。(guard, status) を返す。無料バックエンドは (None, None)。
+
+    「実課金累計 + 次回見積 <= 承認上限」を送信前に検査するための材料を作る。
+    """
+    config = state.get("config", {}).get("production", {}).get("cost_guard", {})
+    if not config.get("enabled", False):
+        return None, None
+    # 無料であることが確実なバックエンドだけ素通しする（fail-closed）。
+    # 見積が取れない場合は「安全側 = 送信させない」に倒す。
+    free_backends = set(
+        config.get("free_backends", ["mock", "comfy"])
+    )
+    guard = VideoCostGuard(
+        ledger_path=deterministic._work_path(state, "video_cost_ledger.json"),
+        limit_usd=float(config.get("limit_usd", 20.0)),
+    )
+    try:
+        adapter = _video_backend(state, backend)
+        model = str(request.get("model") or "") or None
+        caps = adapter.capabilities(model)
+    except Exception as exc:  # noqa: BLE001
+        if backend in free_backends:
+            return None, None
+        # 課金系で見積不能 → 送信を止める
+        return guard, BudgetStatus(
+            limit_usd=guard.limit_usd,
+            spent_usd=guard.spent_usd,
+            next_estimate_usd=float("inf"),
+            generations=0,
+        )
+    if caps.cost_per_second_usd <= 0 and backend in free_backends:
+        return None, None       # ローカル実行は課金なし
+    try:
+        estimate = caps.estimate_cost(
+            float(
+                request.get("requested_seconds")
+                or request.get("actual_seconds", 0)
+            )
+        )
+    except UnsupportedDurationError:
+        # 尺がモデルの上限を超える → 短く切り詰めず、ここで止める
+        return guard, BudgetStatus(
+            limit_usd=guard.limit_usd,
+            spent_usd=guard.spent_usd,
+            next_estimate_usd=float("inf"),
+            generations=0,
+        )
+    return guard, guard.check(estimate)
 
 
 def image_video_production(state: WorkflowState) -> dict[str, Any]:
@@ -437,29 +565,70 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
     issues: list[str] = []
     generation: dict[str, Any] = {}
     output_path = ""
+    guard, budget = _video_budget(state, backend, request)
+    if budget is not None and not budget.allowed:
+        # 課金上限を超えるため、APIへ送信せずに停止する。
+        # 「実課金累計 + 次回見積 <= 上限」を満たさない再生成は行わない。
+        update = deterministic._complete(
+            state,
+            phase,
+            summary="動画生成の予算上限に到達",
+            data={
+                "cut_id": current,
+                "issue_class": "budget",
+                "attempt": attempt,
+                "budget": {
+                    "limit_usd": budget.limit_usd,
+                    "spent_usd": budget.spent_usd,
+                    "next_estimate_usd": budget.next_estimate_usd,
+                    "projected_usd": budget.projected_usd,
+                },
+            },
+            status="error",
+            confidence=0.0,
+            blocking_issues=[
+                f"予算上限: 実課金 ${budget.spent_usd:.2f} + 見積 "
+                f"${budget.next_estimate_usd:.2f} > 上限 "
+                f"${budget.limit_usd:.2f}"
+            ],
+        )
+        update.update({"current_cut_id": current, "cut_attempts": attempts})
+        return update
     try:
-        if backend == "comfy":
-            generation = _generate_comfy(state, request)
-            output_path = str(generation["output_path"])
-        elif backend == "mock":
-            output_path = str(
-                deterministic._cut_path(state, current)
-                / f"attempt_{attempt:02d}.mp4"
-            )
-            generation = generate_mock_video(
-                output_path,
-                duration_seconds=float(request["actual_seconds"]),
-                width=int(request["width"]),
-                height=int(request["height"]),
-                fps=int(request["fps"]),
-                cut_id=current,
-            )
-        else:
-            raise ValueError(f"Unsupported production backend: {backend}")
+        # 生成は必ず Adapter 経由で行う。バックエンドごとの分岐はここに無い
+        # （Runway等を足しても、この呼び出しは変わらない）。
+        adapter = _video_backend(state, backend)
+        result = adapter.generate(to_video_request(request, attempt=attempt))
+        output_path = result.output_path
+        generation = {
+            **result.settings,
+            **result.to_record(),
+            "output_path": output_path,
+        }
     except Exception as exc:
         issues.append(f"{type(exc).__name__}: {exc}")
 
     elapsed = round(time.monotonic() - started, 3)
+    # 実課金を台帳へ積む（見積ではなく実額。次回の上限判定に使う）
+    if guard is not None and not issues:
+        try:
+            guard.record(
+                cut_id=current,
+                provider=backend,
+                model=str(request.get("model") or ""),
+                cost_usd=float(generation.get("cost_usd", 0.0)),
+                billed_seconds=float(
+                    generation.get("billed_seconds")
+                    or request.get("actual_seconds", 0)
+                ),
+                # VideoResult.to_record() は job_id を出す（prompt_id ではない）
+                job_id=str(generation.get("job_id") or "") or None,
+                estimated_usd=(
+                    budget.next_estimate_usd if budget else None
+                ),
+            )
+        except OSError:
+            pass
     artifact = {
         "phase": phase,
         "cut_id": current,
@@ -1097,6 +1266,16 @@ def post_production(state: WorkflowState) -> dict[str, Any]:
         "subtitle_plan": {"status": "not_configured"},
         "narration_plan": {"status": "not_configured"},
         "bgm_plan": {"status": "not_configured"},
+        # クリップ側の音声は正規化時に必ず除去している（-an）。
+        # 音は最終工程でBGM/ナレーションを一本だけ乗せる方針。
+        "audio_policy": {
+            "clip_audio": "stripped",
+            "reason": (
+                "クラウドモデルはクリップ毎に音声を生成するため、"
+                "連結時に環境音が切り替わるのを防ぐ"
+            ),
+            "final_audio": "single_track_added_later",
+        },
     }
     _json_write(output_dir / "edit_manifest.json", edit_manifest)
     _json_write(output_dir / "ffmpeg_commands.json", command_records)

@@ -240,6 +240,13 @@ def normalize_video_clip(
     height: int,
     fps: int,
 ) -> dict[str, Any]:
+    """クリップを結合可能な形へ正規化する。
+
+    `-an` により **クリップ側の音声は必ず除去する**。クラウドモデル
+    （veo3.1 / seedance2 など）はクリップごとに音声を生成するため、
+    そのまま連結すると数秒ごとに環境音が切り替わってしまう。
+    音は最終結合時にBGM/ナレーションを一本だけ乗せる方針。
+    """
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     video_filter = (

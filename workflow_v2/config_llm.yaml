@@ -96,6 +96,12 @@ llm:
 
 production:
   backend: comfy
+  # 課金を伴うバックエンド（クラウドAPI）用の上限。
+  # 送信前に「実課金累計 + 次回見積 <= limit_usd」を必ず検査する。
+  # ローカル(comfy/mock)は無料なのでこの設定に関わらず素通しする。
+  cost_guard:
+    enabled: true
+    limit_usd: 20.0
   max_video_cuts_per_run: 3
   continue_on_cut_error: false
   profile: draft
@@ -153,6 +159,45 @@ comfy:
     fps: {node_id: "", input: fps}
     seed: {node_id: "", input: noise_seed}
     file_prefix: {node_id: "", input: filename_prefix}
+
+# --- クラウド動画生成（Runway Dev API）-------------------------------------
+# 単一の統合で複数モデルを切り替えられる。model を変えるだけで比較できる。
+#   backend: runway / model: veo3.1_fast  のように production 側で指定する。
+# 料金・許容尺は変動するため、必ず Runway のダッシュボードで最新値を確認すること。
+runway:
+  base_url: https://api.dev.runwayml.com
+  api_version: "2024-11-06"        # X-Runway-Version ヘッダ
+  api_key_env: RUNWAY_API_KEY      # 実キーは .env に置く
+  poll_interval_seconds: 5
+  timeout_seconds: 900
+  ratio: "1280:720"
+  models:
+    gen4.5:
+      # Runway公式: 2〜10秒の整数尺。
+      allowed_seconds: [2, 3, 4, 5, 6, 7, 8, 9, 10]
+      resolutions: ["1280:720"]
+      supports_seed: true
+      supports_negative_prompt: false
+      has_native_audio: false
+      cost_per_second_usd: 0.12
+    veo3.1_fast:
+      allowed_seconds: [4, 6, 8]
+      resolutions: ["1280:720"]
+      supports_seed: true
+      supports_negative_prompt: true
+      has_native_audio: true
+      request_audio: false         # 可能なら音声を生成させない
+      cost_per_second_usd: 0.10    # no-audio価格
+    seedance2:
+      # Runway公式: 4〜15秒の整数尺。
+      allowed_seconds: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      resolutions: ["1280:720"]
+      supports_seed: true
+      # negativePromptはVeo系のみ公式に明記。Seedanceには送らない。
+      supports_negative_prompt: false
+      has_native_audio: true
+      # audioフィールドの受理可否が未確認なので送らない。出力音声はPhase 08で除去。
+      cost_per_second_usd: 0.36    # 480p/720p価格
 
 paths:
   work_dir: work
