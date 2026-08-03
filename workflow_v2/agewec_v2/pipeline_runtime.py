@@ -15,6 +15,7 @@ import hashlib
 import html
 import json
 import math
+import re
 import shutil
 import time
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from . import review_page
 from . import timing
 from .backends import (
     BudgetStatus,
+    Capabilities,
     ComfyClient,
     ComfyGenerationRequest,
     UnsupportedDurationError,
@@ -47,6 +49,7 @@ from .media_tools import (
     probe_media,
 )
 from .state import WorkflowState
+from .state_safe import SafeWorkflowState
 
 
 def _result_data(state: WorkflowState, phase: str) -> dict[str, Any]:
@@ -103,6 +106,71 @@ def _ltx_frame_count(
     return max(offset, offset + steps * multiple)
 
 
+def _ratio_dimensions(ratio: str) -> tuple[int, int]:
+    """Convert a Runway ratio such as ``1280:720`` to dimensions."""
+    try:
+        width_text, height_text = ratio.split(":", 1)
+        width, height = int(width_text), int(height_text)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"不正なRunway ratio: {ratio!r}") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError(f"不正なRunway ratio: {ratio!r}")
+    return width, height
+
+
+def _runway_request_parameters(
+    config: dict[str, Any],
+    production: dict[str, Any],
+    requested_seconds: float,
+) -> dict[str, Any]:
+    """Resolve the exact model-native values that Runway will receive.
+
+    This is intentionally independent from the Comfy/LTX profile.  The same
+    resolved duration and ratio are used by cost approval, API generation and
+    QA, preventing estimates and technical checks from describing a different
+    request than the one actually billed.
+    """
+    runway = dict(config.get("runway", {}))
+    model = str(production.get("model") or "")
+    models = dict(runway.get("models", {}))
+    spec = dict(models.get(model, {}))
+    if not model or not spec:
+        raise ValueError(
+            f"Runwayモデル {model or '(未設定)'} が config.runway.models にありません"
+        )
+    caps = Capabilities(
+        model=model,
+        allowed_seconds=tuple(
+            float(value) for value in spec.get("allowed_seconds", ())
+        ),
+        max_seconds=float(spec.get("max_seconds", 0.0)),
+        resolutions=tuple(spec.get("resolutions", ())),
+        supports_seed=bool(spec.get("supports_seed", True)),
+        supports_negative_prompt=bool(
+            spec.get("supports_negative_prompt", True)
+        ),
+        has_native_audio=bool(spec.get("has_native_audio", False)),
+        cost_per_second_usd=float(spec.get("cost_per_second_usd", 0.0)),
+        minimum_cost_usd=float(spec.get("minimum_cost_usd", 0.0)),
+    )
+    effective_seconds = caps.resolve_seconds(requested_seconds)
+    ratio = str(spec.get("ratio") or runway.get("ratio") or "")
+    if caps.resolutions and ratio not in caps.resolutions:
+        raise ValueError(
+            f"Runway {model}: ratio={ratio} は許容解像度 {caps.resolutions} にありません"
+        )
+    width, height = _ratio_dimensions(ratio)
+    return {
+        "model": model,
+        "requested_seconds": requested_seconds,
+        "actual_seconds": effective_seconds,
+        "effective_seconds": effective_seconds,
+        "ratio": ratio,
+        "width": width,
+        "height": height,
+    }
+
+
 def support_video_creator(state: WorkflowState) -> dict[str, Any]:
     phase = "support_video_creator"
     direction = _result_data(state, "director")
@@ -138,6 +206,10 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
     existing = dict(state.get("production_requests", {}))
     if target_cut_id is None:
         existing = {}
+    else:
+        # Rebuild the targeted request from scratch. If model validation fails,
+        # an old request must not remain eligible for another paid generation.
+        existing.pop(str(target_cut_id), None)
     blocking: list[str] = []
     request_updates: dict[str, dict[str, Any]] = {}
     for shot in shots:
@@ -145,20 +217,6 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         if target_cut_id is not None and cut_id != target_cut_id:
             continue
         seconds = float(shot["seconds"])
-        fps = int(profile.get("fps", 24))
-        frames = _ltx_frame_count(
-            seconds,
-            fps,
-            multiple=frame_multiple,
-            offset=frame_offset,
-        )
-        # LTX frame limits belong to the ComfyUI backend. Cloud adapters
-        # validate duration against their own model capabilities instead.
-        if backend == "comfy" and frames > max_frames:
-            blocking.append(
-                f"cut {cut_id}: {frames} frames exceeds model max {max_frames}; "
-                "Writer / StoryboardまたはDirectorでカットを分割してください"
-            )
         image_path = str(shot.get("asset", {}).get("local_path") or "")
         if backend != "mock" and (
             not image_path or not Path(image_path).exists()
@@ -167,11 +225,53 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
                 f"cut {cut_id}: ローカル入力画像が存在しない: "
                 f"{image_path or '(empty)'}"
             )
-        pixel_load = (
-            int(profile.get("width", 576))
-            * int(profile.get("height", 384))
-            * frames
+        common_request = {
+            "cut_id": cut_id,
+            "backend": backend,
+            "media_requirement": shot.get("media_requirement"),
+            "image_path": image_path,
+            "positive_prompt": shot["positive_prompt"],
+            "negative_prompt": shot.get("negative_prompt", ""),
+            "camera_motion": shot.get("camera_motion", ""),
+            "motion_intensity": shot.get("motion_intensity", "subtle"),
+            "seed": _stable_seed(
+                str(state.get("run_id", "")),
+                cut_id,
+                int(state.get("cut_attempts", {}).get(str(cut_id), 0)),
+            ),
+        }
+        if backend == "runway":
+            try:
+                backend_parameters = _runway_request_parameters(
+                    config, production, seconds
+                )
+            except (UnsupportedDurationError, ValueError) as exc:
+                blocking.append(f"cut {cut_id}: {exc}")
+                continue
+            request_updates[str(cut_id)] = {
+                **common_request,
+                **backend_parameters,
+                "request_contract": "runway_model_native",
+            }
+            continue
+
+        # Comfy/mock keep the existing LTX profile and its 8n+1 frame rule.
+        # These fields must never leak into the Runway request contract above.
+        fps = int(profile.get("fps", 24))
+        frames = _ltx_frame_count(
+            seconds,
+            fps,
+            multiple=frame_multiple,
+            offset=frame_offset,
         )
+        if backend == "comfy" and frames > max_frames:
+            blocking.append(
+                f"cut {cut_id}: {frames} frames exceeds model max {max_frames}; "
+                "Writer / StoryboardまたはDirectorでカットを分割してください"
+            )
+        width = int(profile.get("width", 576))
+        height = int(profile.get("height", 384))
+        pixel_load = width * height * frames
         cost_class = (
             "low"
             if pixel_load < 15_000_000
@@ -180,8 +280,7 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
             else "high"
         )
         request_updates[str(cut_id)] = {
-            "cut_id": cut_id,
-            "backend": backend,
+            **common_request,
             "workflow": str(
                 config.get("comfy", {}).get(
                     "workflow_api_json",
@@ -189,25 +288,17 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
                 )
             ),
             "model_profile": profile_name,
-            "media_requirement": shot.get("media_requirement"),
-            "image_path": image_path,
-            "positive_prompt": shot["positive_prompt"],
-            "negative_prompt": shot.get("negative_prompt", ""),
-            "camera_motion": shot.get("camera_motion", ""),
-            "motion_intensity": shot.get("motion_intensity", "subtle"),
-            "width": int(profile.get("width", 576)),
-            "height": int(profile.get("height", 384)),
+            "width": width,
+            "height": height,
             "frames": frames,
             "steps": int(profile.get("steps", 20)),
             "fps": fps,
-            "seed": _stable_seed(
-                str(state.get("run_id", "")),
-                cut_id,
-                int(state.get("cut_attempts", {}).get(str(cut_id), 0)),
-            ),
             "requested_seconds": seconds,
             "actual_seconds": round(frames / fps, 4),
             "estimated_cost_class": cost_class,
+            "request_contract": (
+                "comfy_ltx" if backend == "comfy" else "local_frame_profile"
+            ),
         }
     existing.update(request_updates)
     expected_ids = {str(int(shot["id"])) for shot in shots}
@@ -255,16 +346,27 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
 
     data = {
         "backend": backend,
-        "profile_name": profile_name,
+        "profile_name": profile_name if backend != "runway" else None,
         "requests": requests,
         "request_count": len(requests),
         "targeted_revision_cut_id": target_cut_id,
         "cost_estimate": cost_estimate,
-        "frame_rule": {
-            "multiple": frame_multiple,
-            "offset": frame_offset,
-            "max_frames": max_frames,
-        },
+        "frame_rule": (
+            {
+                "multiple": frame_multiple,
+                "offset": frame_offset,
+                "max_frames": max_frames,
+            }
+            if backend != "runway"
+            else None
+        ),
+        "request_contract": (
+            "runway_model_native"
+            if backend == "runway"
+            else "comfy_ltx"
+            if backend == "comfy"
+            else "local_frame_profile"
+        ),
     }
     update = deterministic._complete(
         state,
@@ -433,6 +535,44 @@ def _video_budget(state: WorkflowState, backend: str, request: dict[str, Any]):
     return guard, guard.check(estimate)
 
 
+def _technical_request_signature(request: dict[str, Any]) -> tuple[Any, ...]:
+    """Fields whose change can resolve duration/resolution QA failures."""
+    return (
+        request.get("backend"),
+        request.get("model"),
+        request.get("requested_seconds"),
+        request.get("actual_seconds"),
+        request.get("ratio"),
+        request.get("width"),
+        request.get("height"),
+        request.get("frames"),
+        request.get("fps"),
+    )
+
+
+def _unchanged_technical_retry(
+    state: WorkflowState,
+    cut_id: int,
+    request: dict[str, Any],
+) -> bool:
+    """Detect a paid retry that cannot fix the immediately preceding QA issue."""
+    previous = state.get("cut_results", {}).get(str(cut_id), {})
+    qa = previous.get("qa") or {}
+    issue_codes = {
+        item.get("code")
+        for item in qa.get("issues", [])
+        if isinstance(item, dict)
+    }
+    if not issue_codes.intersection({"DURATION_MISMATCH", "RESOLUTION_MISMATCH"}):
+        return False
+    previous_request = (previous.get("production") or {}).get("request") or {}
+    if not previous_request:
+        return False
+    return _technical_request_signature(
+        previous_request
+    ) == _technical_request_signature(request)
+
+
 def image_video_production(state: WorkflowState) -> dict[str, Any]:
     phase = "image_video_production"
     requests = dict(state.get("production_requests", {}))
@@ -465,6 +605,28 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
             confidence=0.0,
             blocking_issues=[f"Cut {current}のProductionRequestがない"],
         )
+
+    if str(request.get("backend")) == "runway":
+        if _unchanged_technical_retry(state, current, request):
+            update = deterministic._complete(
+                state,
+                phase,
+                summary=f"Cut {current}の同一条件での再課金を停止",
+                data={
+                    "cut_id": current,
+                    "issue_class": "generation_parameters",
+                    "api_called": False,
+                    "reason": "technical_generation_settings_unchanged",
+                },
+                status="error",
+                confidence=1.0,
+                blocking_issues=[
+                    "前回の尺・解像度エラーに対して生成条件が変わっていません。"
+                    "同じ有料API呼び出しを停止しました。"
+                ],
+            )
+            update.update({"current_cut_id": current})
+            return update
 
     attempts = dict(state.get("cut_attempts", {}))
     attempt = int(attempts.get(str(current), 0)) + 1
@@ -721,7 +883,30 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
             raise MediaToolError("生成動画のArtifactがない")
         technical = probe_media(artifact["path"])
         decode_check(artifact["path"])
-        expected = float(request.get("actual_seconds") or 0)
+        generation = (artifact or {}).get("generation") or {}
+        generation_settings = generation.get("settings") or {}
+        backend = str((artifact or {}).get("backend") or request.get("backend"))
+        if backend == "runway":
+            # Runway may normalize an allowed duration/ratio. QA must validate
+            # against the values actually sent and billed, not a Comfy profile.
+            expected = float(
+                generation.get("billed_seconds")
+                or generation.get("actual_seconds")
+                or request.get("effective_seconds")
+                or request.get("actual_seconds")
+                or 0
+            )
+            expected_ratio = str(
+                generation.get("ratio")
+                or generation_settings.get("ratio")
+                or request.get("ratio")
+                or ""
+            )
+            expected_width, expected_height = _ratio_dimensions(expected_ratio)
+        else:
+            expected = float(request.get("actual_seconds") or 0)
+            expected_width = int(request.get("width", 0))
+            expected_height = int(request.get("height", 0))
         delta = abs(float(technical["duration_seconds"]) - expected)
         tolerance = float(
             state.get("config", {})
@@ -742,8 +927,8 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
                 }
             )
         if (
-            technical["width"] != int(request.get("width", 0))
-            or technical["height"] != int(request.get("height", 0))
+            technical["width"] != expected_width
+            or technical["height"] != expected_height
         ):
             issue_class = "generation_parameters"
             issues.append(
@@ -751,8 +936,8 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
                     "code": "RESOLUTION_MISMATCH",
                     "severity": "high",
                     "description": (
-                        f"expected={request.get('width')}x"
-                        f"{request.get('height')}, actual="
+                        f"expected={expected_width}x"
+                        f"{expected_height}, actual="
                         f"{technical['width']}x{technical['height']}"
                     ),
                     "evidence": [artifact["path"]],
@@ -888,7 +1073,7 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
     return update
 
 
-def commit_cut_qa(state: WorkflowState) -> dict[str, Any]:
+def commit_cut_qa(state: SafeWorkflowState) -> dict[str, Any]:
     current = int(state.get("current_cut_id") or 0)
     qa = state.get("cut_qa_results", {}).get(str(current), {})
     # 人間がレビューで下した判断は、AIのQA判定より優先する。
@@ -962,6 +1147,9 @@ def commit_cut_qa(state: WorkflowState) -> dict[str, Any]:
                 "source_review": "cut_visual_qa",
                 "target_cut_id": current,
                 "correction_type": qa.get("issue_class", ""),
+                "feedback_origin": (
+                    "human" if qa.get("decided_by") == "human" else "ai_qa"
+                ),
             }
             feedback[target_phase] = qa.get(
                 "recommended_feedback",
@@ -1008,6 +1196,9 @@ def commit_cut_qa(state: WorkflowState) -> dict[str, Any]:
             "decided_by": "human" if human_applied else "ai",
             "feedback": qa.get("recommended_feedback", ""),
             "issue_class": qa.get("issue_class", ""),
+            "override_reason": (human_applied or {}).get("override_reason", ""),
+            "original_verdict": (human_applied or {}).get("original_verdict"),
+            "original_issues": (human_applied or {}).get("original_issues", []),
             "decided_at": datetime.now(timezone.utc).isoformat(),
         }
         _json_write(
@@ -1726,12 +1917,7 @@ def _phase_actual_items(
             (
                 "生成Request",
                 [
-                    (
-                        f"Cut {item.get('cut_id')}: "
-                        f"{item.get('width')}x{item.get('height')}, "
-                        f"{item.get('frames')} frames, "
-                        f"{item.get('fps')}fps, {item.get('steps')} steps"
-                    )
+                    f"Cut {item.get('cut_id')}: {_request_summary(item)}"
                     for item in requests.values()
                 ],
             )
@@ -1773,7 +1959,7 @@ def _phase_actual_items(
         technical = data.get("technical_qa", {})
         return [
             ("実装", data.get("implementation")),
-            ("最終動画", data.get("output_path")),
+            ("最終動画", _portable_path(data.get("output_path") or "—")),
             (
                 "Technical QA",
                 {
@@ -1813,6 +1999,34 @@ def _format_markdown_value(value: Any) -> str:
             if item not in (None, "", [], {})
         ) or "—"
     return _compact_text(value) or "—"
+
+
+def _feedback_actual_items(result: dict[str, Any]) -> list[tuple[str, Any]]:
+    feedback = str(result.get("feedback_received") or "")
+    if not feedback:
+        return []
+    previous = result.get("previous_data")
+    current = result.get("data", {})
+    changed = []
+    if isinstance(previous, dict) and isinstance(current, dict):
+        changed = sorted(
+            key
+            for key in set(previous) | set(current)
+            if previous.get(key) != current.get(key)
+        )
+    feedback_label = {
+        "human": "人間フィードバック",
+        "ai_qa": "QAによる自動修正提案",
+        "system": "システム修正情報",
+    }.get(str(result.get("feedback_origin")), "前工程からの修正情報")
+    return [
+        (feedback_label, feedback),
+        ("フィードバック状態", result.get("feedback_status")),
+        (
+            "反映確認用差分",
+            changed or result.get("feedback_application_evidence") or "変更なし",
+        ),
+    ]
 
 
 def _render_html_value(value: Any) -> str:
@@ -1859,7 +2073,9 @@ def _process_markdown(state: WorkflowState, video_name: str) -> str:
     ]
     phase_results = state.get("phase_results", {})
     reviews = state.get("reviews", [])
-    for guide in _PHASE_PRESENTATION:
+    for static_guide in _PHASE_PRESENTATION:
+        # 実際に使ったバックエンドに合わせて説明文を差し替える
+        guide = _guide_for_backend(static_guide, state)
         phase = guide["id"]
         result = phase_results.get(phase, {})
         related_reviews = [
@@ -1885,11 +2101,9 @@ def _process_markdown(state: WorkflowState, video_name: str) -> str:
             ]
         )
         if result:
-            for label, value in _phase_actual_items(
-                phase,
-                result,
-                state,
-            ):
+            actual_items = _phase_actual_items(phase, result, state)
+            actual_items.extend(_feedback_actual_items(result))
+            for label, value in actual_items:
                 lines.append(
                     f"- 実際の{label}: {_format_markdown_value(value)}"
                 )
@@ -1949,6 +2163,225 @@ def _cut_media_paths(state: WorkflowState, cut_id: int) -> tuple[str | None, str
     return source_rel, clip_rel
 
 
+# ホームディレクトリの一般形（macOS: /Users/名前, Linux: /home/名前）。
+# レポートを生成した機械と、パスが記録された機械が違う場合（過去runの再生成、
+# CI、別環境での検証）でもユーザー名が残らないよう、実行環境の HOME だけに
+# 頼らず正規表現でも畳む。
+_HOME_PATTERN = re.compile(r"/(?:Users|home)/[^/\"',\s]+/")
+
+
+def _llm_usage_totals(state: WorkflowState) -> dict[str, Any]:
+    """LLM呼び出しのトークン数と費用を、この run の分だけ合計する。
+
+    `work/llm_cost_ledger.json` は全run累積なので使えない。各フェーズの
+    `phase_results[phase]["llm"]["usage"]` を足し、config の単価で費用を出す。
+    古い run では usage が "***" にマスクされていることがあるため、数値化
+    できたものだけを集計し、その旨を `available` で返す。
+    """
+    llm_config = state.get("config", {}).get("llm", {})
+    guard = llm_config.get("cost_guard", {})
+    in_rate = float(guard.get("input_cost_per_million_usd", 0.0))
+    out_rate = float(guard.get("output_cost_per_million_usd", 0.0))
+
+    prompt = completion = 0
+    calls = 0
+    masked = False
+    for result in state.get("phase_results", {}).values():
+        usage = ((result or {}).get("llm") or {}).get("usage") or {}
+        if not usage:
+            continue
+        calls += 1
+        for key, add in (("prompt_tokens", "p"), ("completion_tokens", "c")):
+            raw = usage.get(key)
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                masked = True
+                continue
+            if add == "p":
+                prompt += value
+            else:
+                completion += value
+
+    cost = (prompt * in_rate + completion * out_rate) / 1_000_000
+    return {
+        "calls": calls,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "cost_usd": round(cost, 6),
+        "available": bool(prompt or completion),
+        "masked": masked,
+        "model": llm_config.get("model") or guard.get("pricing_model", ""),
+    }
+
+
+def _video_cost_summary(state: WorkflowState) -> dict[str, Any]:
+    """この run の動画生成の実課金を台帳から読む（推定ではなく実額）。"""
+    path = deterministic._work_path(state, "video_cost_ledger.json")
+    try:
+        ledger = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"spent_usd": 0.0, "generations": []}
+    return {
+        "spent_usd": float(ledger.get("spent_usd", 0.0)),
+        "generations": list(ledger.get("generations", [])),
+    }
+
+
+def _human_intervention_summary(state: WorkflowState) -> dict[str, int]:
+    """人間が何回・どう介入したかを数える（自律性の説明に使う）。"""
+    counts = {"approve": 0, "retry_with_feedback": 0, "override": 0}
+    for review in state.get("reviews", []):
+        if str(review.get("decided_by")) != "human":
+            continue
+        action = str(review.get("action"))
+        if action in counts:
+            counts[action] += 1
+    for cut in state.get("cut_results", {}).values():
+        if ((cut or {}).get("qa") or {}).get("decided_by") == "human":
+            counts["override"] += 1
+    return counts
+
+
+def _portable_path(value: Any) -> str:
+    """提出物に載せるパスから、実行環境固有の部分を取り除く。
+
+    `/Users/<name>/.../Agewec/workflow_v2/work/...` のような絶対パスをそのまま
+    載せると、提出先にユーザー名とディレクトリ構成が見える。まずリポジトリからの
+    相対表記へ畳み、残った絶対パスはホーム部分を `~/` に置き換える。
+    """
+    text = str(value)
+    if not text:
+        return text
+    for root in (deterministic.WORKFLOW_ROOT.parent, Path.home()):
+        text = text.replace(str(root) + "/", "").replace(str(root), ".")
+    return _HOME_PATTERN.sub("~/", text)
+
+
+# バックエンドごとの説明文。_PHASE_PRESENTATION は静的な辞書なので、
+# ComfyUI/LTX固定の文言を実際に使った経路へ差し替える。
+# （Runwayで実行したのに「ComfyUIが実行できる技術パラメータへ変換」と
+#   書かれていると、レポートが事実と食い違う）
+_BACKEND_PRESENTATION: dict[str, dict[str, dict[str, Any]]] = {
+    "runway": {
+        "support_video_creator": {
+            "purpose": (
+                "演出指示を、動画生成APIが受け付ける技術パラメータへ"
+                "安全に変換する。"
+            ),
+            "inputs": [
+                "画像パスと生成Prompt",
+                "Storyboard秒数",
+                "モデルの許容尺・解像度・単価",
+            ],
+            "process": (
+                "秒数をモデルの許容尺へ丸め、解像度・seed・概算費用を確定する。"
+            ),
+        },
+        "image_video_production": {
+            "inputs": [
+                "入力画像",
+                "positive/negative prompt",
+                "model / duration / ratio / seed",
+            ],
+            "process": (
+                "Runway APIへ投入し、完了を待って生成動画と実行情報・"
+                "実課金額を保存する。"
+            ),
+        },
+    },
+}
+
+
+def _guide_for_backend(
+    guide: dict[str, Any],
+    state: WorkflowState,
+) -> dict[str, Any]:
+    backend = str(
+        state.get("config", {}).get("production", {}).get("backend", "")
+    )
+    override = _BACKEND_PRESENTATION.get(backend, {}).get(guide["id"])
+    return {**guide, **override} if override else guide
+
+
+def _request_summary(item: dict[str, Any]) -> str:
+    """ProductionRequest 1件を、その契約に存在する項目だけで1行にする。
+
+    Runway契約には frames / steps / fps が無く（尺と解像度はモデル側が決める）、
+    Comfy/LTX契約にはモデル名や許容尺が無い。両方を同じ書式で出そうとすると
+    「None frames / Nonefps / None steps」のように存在しない項目が None として
+    表示されるため、契約ごとに項目を選ぶ。
+    """
+    parts: list[str] = []
+    width, height = item.get("width"), item.get("height")
+    if width and height:
+        parts.append(f"{width}x{height}")
+
+    if str(item.get("request_contract", "")) == "runway_model_native":
+        if item.get("model"):
+            parts.append(str(item["model"]))
+        seconds = item.get("effective_seconds") or item.get("actual_seconds")
+        if seconds:
+            parts.append(f"{float(seconds):g}秒")
+    else:
+        for value, unit in (
+            (item.get("frames"), " frames"),
+            (item.get("fps"), "fps"),
+            (item.get("steps"), " steps"),
+        ):
+            if value is not None:
+                parts.append(f"{value}{unit}")
+
+    if item.get("seed") is not None:
+        parts.append(f"seed {item['seed']}")
+    return ", ".join(parts) if parts else "—"
+
+
+def _generation_conditions(
+    request: dict[str, Any],
+    qa: dict[str, Any],
+) -> str:
+    """解像度・fps・尺を「実際に出力された値」優先で1行にまとめる。
+
+    fps はバックエンドによって Request に存在しない（Runwayはモデル側が決める
+    ためリクエスト項目が無く、LTXのときだけ入る）。Requestだけを見ると空文字に
+    なり「1280×720 / fps / ...」と壊れた表示になるため、QAがffprobeで実測した
+    `technical` を第一の情報源とし、無い場合のみ Request で補う。
+    項目が両方から得られないときは、その項目ごと省く。
+    """
+    technical = qa.get("technical") or {}
+    parts: list[str] = []
+
+    width = technical.get("width") or request.get("width")
+    height = technical.get("height") or request.get("height")
+    if width and height:
+        parts.append(f"{width}×{height}")
+
+    fps = technical.get("fps") or request.get("fps")
+    if fps:
+        value = float(fps)
+        parts.append(f"{value:g}fps")
+
+    seconds = (
+        technical.get("duration_seconds")
+        or request.get("actual_seconds")
+        or request.get("requested_seconds")
+    )
+    if seconds:
+        parts.append(f"{float(seconds):.2f}秒")
+
+    return " / ".join(parts) if parts else "—"
+
+
+# カード表示で同じ内容を示す項目。文字列の羅列を二重に出さないため、
+# カードがあるフェーズではこれらの行を省く（絶対パスの露出もここで消える）。
+_CARD_COVERED_ITEMS: dict[str, set[str]] = {
+    "director": {"カット別演出"},
+    "image_video_production": {"生成済みカット", "生成動画"},
+}
+
+
 def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
     """演出設計・映像生成の「実物」を並べたカードを返す。
 
@@ -1977,9 +2410,13 @@ def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
         "padding:12px 14px;margin-bottom:10px;"
     )
     label = "font-size:11px;color:#5b6570;margin:8px 0 2px;"
+    # レポート全体のCSSは pre{background:#202723;color:#dce8e2}（暗い背景に
+    # 明るい文字）。カードでは背景を明るくするため、文字色も必ず上書きする。
+    # color を省くと「ほぼ白地に明るいグレー文字」となりコントラスト比が
+    # 1.13:1 まで落ち、本文が読めなくなる（WCAG基準は4.5:1）。
     pre = (
-        "white-space:pre-wrap;background:#f0f3f7;border-radius:6px;"
-        "padding:8px;font-size:12px;margin:0;"
+        "white-space:pre-wrap;background:#f0f3f7;color:#1f2933;"
+        "border-radius:6px;padding:8px;font-size:12px;margin:0;"
     )
     cards = []
     for shot in shots:
@@ -2062,20 +2499,131 @@ def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
                 "</div>"
                 f"<p style='{label}'>生成条件</p>"
                 "<div style='font-size:12px;color:#5b6570;'>"
-                f"{html.escape(str(request.get('width', '')))}×"
-                f"{html.escape(str(request.get('height', '')))} / "
-                f"{html.escape(str(request.get('fps', '')))}fps / "
-                f"seed {html.escape(str(request.get('seed', '')))} / "
+                f"{html.escape(_generation_conditions(request, qa))} / "
+                f"seed {html.escape(str(request.get('seed', '—')))} / "
                 f"試行 {html.escape(str(attempts.get(str(cut_id), 1)))}回目</div>"
                 f"<p style='{label}'>QA結果: {html.escape(verdict)}</p>"
                 f"<div style='font-size:12px;color:#5b6570;'>{issue_text}</div>"
                 "</div>"
             )
     title = "選定した写真と演出指示" if phase == "director" else "生成された映像"
+    # .actual-row は grid-template-columns:180px 1fr。カードを直下に並べると
+    # 「見出し・カード1」で1行目が埋まり、カード2以降が180pxの狭い列へ
+    # 送られて潰れる。カード全体を1つの器に入れ、行の子要素を常に2つに保つ。
     return (
         f"<div class='actual-row'><h4>{title}</h4>"
-        + "".join(cards)
-        + "</div>"
+        f"<div class='card-stack'>{''.join(cards)}</div>"
+        "</div>"
+    )
+
+
+def _run_summary_html(state: WorkflowState) -> str:
+    """実行サマリー（時間・費用・人間の介入）をレポート末尾に置く。
+
+    審査側が最初に知りたいのは「いくらで、どれだけの時間で、人がどれだけ
+    手を入れて作ったか」であり、フェーズ本文を全部読まないと分からない状態を
+    避ける。数値はすべてこの run の実績（見積ではない）。
+    """
+    timing_summary = timing.summarize(state)
+    llm = _llm_usage_totals(state)
+    video = _video_cost_summary(state)
+    human = _human_intervention_summary(state)
+    total_cost = llm["cost_usd"] + video["spent_usd"]
+    titles = {g["id"]: g["title"] for g in _PHASE_PRESENTATION}
+    numbers = {g["id"]: g["number"] for g in _PHASE_PRESENTATION}
+    # 図に出さない内部ノードも時間は計測される。phase名のまま出すと
+    # 読み手が「これは何の工程か」を判断できないので、日本語名を与える。
+    titles.setdefault("commit_cut_qa", "カット判定の確定（内部処理）")
+
+    def minutes(seconds: float) -> str:
+        seconds = float(seconds or 0)
+        return (
+            f"{seconds:.1f}秒"
+            if seconds < 60
+            else f"{int(seconds // 60)}分{seconds % 60:.0f}秒"
+        )
+
+    kpis = [
+        ("総所要時間（処理のみ）", minutes(timing_summary["total_phase_seconds"])),
+        ("総費用", f"${total_cost:.2f}"),
+        (
+            "人間の介入",
+            f"承認{human['approve']} / 差し戻し{human['retry_with_feedback']}"
+            + (f" / 上書き{human['override']}" if human["override"] else ""),
+        ),
+        ("最も時間を要した工程", str(timing_summary.get("slowest_phase") or "—")),
+    ]
+    kpi_html = "".join(
+        "<div class='kpi'>"
+        f"<span class='kpi-label'>{html.escape(label)}</span>"
+        f"<strong class='kpi-value'>{html.escape(value)}</strong></div>"
+        for label, value in kpis
+    )
+
+    # timing.summarize は所要時間の降順で返すが、レポートでは工程の実行順に
+    # 並べる（01→02→…）。番号を持たない内部ノードは末尾へ回す。
+    order = {guide["id"]: index for index, guide in enumerate(_PHASE_PRESENTATION)}
+    phases_in_flow_order = sorted(
+        timing_summary.get("phases", []),
+        key=lambda row: order.get(row.get("phase"), len(order)),
+    )
+    phase_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(numbers.get(row['phase'], '—'))}</td>"
+        f"<td>{html.escape(titles.get(row['phase'], row['phase']))}</td>"
+        f"<td class='num'>{html.escape(str(row.get('runs', 1)))}</td>"
+        f"<td class='num'>{html.escape(minutes(row.get('cumulative_duration_seconds', 0)))}</td>"
+        f"<td>{html.escape(str(row.get('last_status', '')))}</td>"
+        "</tr>"
+        for row in phases_in_flow_order
+    ) or "<tr><td colspan='5'>計測データがありません</td></tr>"
+
+    def video_row(gen: dict[str, Any]) -> str:
+        seconds = float(gen.get("billed_seconds", 0) or 0)
+        model = str(gen.get("model") or gen.get("provider") or "—")
+        job = str(gen.get("job_id") or "—")[:8]
+        return (
+            "<tr>"
+            f"<td class='num'>Cut {html.escape(str(gen.get('cut_id')))}</td>"
+            f"<td>{html.escape(model)}</td>"
+            f"<td class='num'>{seconds:g}秒</td>"
+            f"<td class='num'>${float(gen.get('cost_usd', 0)):.2f}</td>"
+            f"<td class='mono'>{html.escape(job)}</td>"
+            "</tr>"
+        )
+
+    video_rows = "".join(
+        video_row(gen) for gen in video["generations"]
+    ) or "<tr><td colspan='5'>課金を伴う生成はありません</td></tr>"
+
+    token_note = (
+        f"AI（LLM）: {llm['calls']}回の呼び出し / "
+        f"{llm['total_tokens']:,}トークン / ${llm['cost_usd']:.4f}"
+        f"（{html.escape(str(llm['model']))}）"
+        if llm["available"]
+        else "AI（LLM）: このrunではトークン使用量が記録されていません"
+    )
+    video_note = f"動画生成: ${video['spent_usd']:.2f}（実課金）"
+
+    return (
+        "<section class='phase-card run-summary-card'>"
+        "<h2>実行サマリー</h2>"
+        f"<div class='kpi-grid'>{kpi_html}</div>"
+        "<h3>工程別の所要時間</h3>"
+        "<table class='summary-table'><thead><tr>"
+        "<th>#</th><th>工程</th><th>実行回数</th><th>所要時間</th><th>状態</th>"
+        f"</tr></thead><tbody>{phase_rows}</tbody></table>"
+        "<h3>動画生成の実課金</h3>"
+        "<table class='summary-table'><thead><tr>"
+        "<th>カット</th><th>モデル</th><th>課金尺</th><th>費用</th><th>Job</th>"
+        f"</tr></thead><tbody>{video_rows}</tbody></table>"
+        "<h3>費用の内訳</h3>"
+        f"<p class='cost-line'>{token_note}</p>"
+        f"<p class='cost-line'>{video_note}</p>"
+        f"<p class='cost-total'>合計 ${total_cost:.2f}</p>"
+        "<p class='muted'>総所要時間は各工程の処理時間の合計であり、"
+        "承認画面での待ち時間は含みません。</p>"
+        "</section>"
     )
 
 
@@ -2084,7 +2632,9 @@ def _process_html(state: WorkflowState, video_name: str) -> str:
     reviews = state.get("reviews", [])
     flow_nodes = []
     cards = []
-    for guide in _PHASE_PRESENTATION:
+    for static_guide in _PHASE_PRESENTATION:
+        # 実際に使ったバックエンドに合わせて説明文を差し替える
+        guide = _guide_for_backend(static_guide, state)
         phase = guide["id"]
         result = phase_results.get(phase, {})
         status = str(result.get("status", "review-only"))
@@ -2095,21 +2645,26 @@ def _process_html(state: WorkflowState, video_name: str) -> str:
             f"<small>{html.escape(guide['kind'])}</small>"
             "</div>"
         )
-        actual = "".join(
+        # 演出設計と映像生成は、文字列の羅列では判断できないため
+        # 実物（元画像・生成映像）を並べたカードを先頭に置く。
+        cards_html = _phase_visual_cards(phase, state) if result else ""
+        covered = _CARD_COVERED_ITEMS.get(phase, set()) if cards_html else set()
+        actual = cards_html + "".join(
             "<div class='actual-row'>"
             f"<h4>{html.escape(label)}</h4>"
             f"{_render_html_value(value)}"
             "</div>"
             for label, value in (
-                _phase_actual_items(phase, result, state)
+                (
+                    _phase_actual_items(phase, result, state)
+                    + _feedback_actual_items(result)
+                )
                 if result
                 else []
             )
+            # カードが同じ内容を示す項目は重複するので出さない
+            if label not in covered
         )
-        # 演出設計と映像生成は、文字列の羅列では判断できないため
-        # 実物（元画像・生成映像）を並べたカードを追加する。
-        if result:
-            actual = _phase_visual_cards(phase, state) + actual
         related_reviews = [
             review
             for review in reviews
@@ -2137,10 +2692,12 @@ def _process_html(state: WorkflowState, video_name: str) -> str:
             "artifacts": result.get("artifacts", []),
         }
         payload = html.escape(
-            json.dumps(
-                deterministic._sanitized(technical),
-                ensure_ascii=False,
-                indent=2,
+            _portable_path(
+                json.dumps(
+                    deterministic._sanitized(technical),
+                    ensure_ascii=False,
+                    indent=2,
+                )
             )
         )
         actual_html = (
@@ -2188,6 +2745,7 @@ def _process_html(state: WorkflowState, video_name: str) -> str:
             "</article>"
         )
     arrows = "<span class='flow-arrow'>→</span>".join(flow_nodes)
+    summary_section = _run_summary_html(state)
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -2225,6 +2783,25 @@ color:#52615b;margin-bottom:7px}}.source,.muted{{color:#74807b}}
 .actual{{border-top:1px solid #e5e8e5;padding-top:20px}}.run-summary{{
 font-size:18px;font-weight:700}}.actual-row{{display:grid;
 grid-template-columns:180px 1fr;gap:16px;padding:10px 0;border-bottom:1px dashed #dde2de}}
+.card-stack{{min-width:0}}
+.run-summary-card{{padding:26px 28px;margin-top:26px}}
+.run-summary-card h2{{font-size:20px;margin-bottom:16px}}
+.run-summary-card h3{{font-size:14px;color:#51625b;margin:22px 0 8px}}
+.kpi-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+gap:12px}}
+.kpi{{background:#f4f6f4;border:1px solid #e2e6e2;border-radius:10px;
+padding:12px 14px}}
+.kpi-label{{display:block;font-size:11px;color:#5b6570;margin-bottom:4px}}
+.kpi-value{{font-size:17px;color:#1c2522}}
+.summary-table{{width:100%;border-collapse:collapse;font-size:13px}}
+.summary-table th{{text-align:left;color:#5b6570;font-weight:600;
+font-size:11px;border-bottom:1px solid #dde2de;padding:6px 8px}}
+.summary-table td{{border-bottom:1px solid #eef1ee;padding:6px 8px}}
+.summary-table td.num{{text-align:right;font-variant-numeric:tabular-nums}}
+.summary-table td.mono{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+color:#5b6570}}
+.cost-line{{font-size:13px;margin:4px 0;color:#3a463f}}
+.cost-total{{font-size:16px;font-weight:700;margin:10px 0 0}}
 .actual-row h4{{font-size:14px;color:#51625b;margin:0}}ul{{margin:6px 0;
 padding-left:21px}}dl{{display:grid;grid-template-columns:minmax(120px,.35fr) 1fr;
 gap:6px 14px;margin:0}}dt{{font-weight:700}}dd{{margin:0}}code{{background:#ecefeb;
@@ -2255,6 +2832,7 @@ body{{padding:18px 12px 50px}}}}
 Image / Video Production、Support Video Creator、Director、Asset Curatorへ戻り、
 Review Boardの修正はPost Productionへ戻ります。</p></section>
 <main>{''.join(cards)}</main>
+{summary_section}
 <p class="footer">公開可能な入力、構造化出力、判断理由、承認履歴を掲載しています。
 内部Chain-of-Thought、APIキー、AIサーバーの生ログは掲載しません。
 完全な機械可読証跡はprovenance.jsonに保存されています。</p>

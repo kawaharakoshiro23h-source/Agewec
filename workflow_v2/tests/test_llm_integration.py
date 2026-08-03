@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import threading
@@ -12,6 +13,11 @@ import yaml
 
 from agewec_v2.graph import build_graph
 from agewec_v2 import nodes_llm
+from agewec_v2.llm.role_runner import (
+    ENGLISH_PROMPT_FIELDS,
+    MACHINE_TOKEN_FIELDS,
+)
+from agewec_v2.llm.schemas import ROLE_SCHEMAS
 from agewec_v2.nodes_llm import (
     _canonical_asset_id,
     _compact_asset_candidates_for_llm,
@@ -180,7 +186,11 @@ class FakeChatHandler(BaseHTTPRequestHandler):
                 "continuity_checks": ["deep blueとamberを維持"],
             }
         else:
-            output = ROLE_OUTPUTS[role]
+            output = copy.deepcopy(ROLE_OUTPUTS[role])
+            if role == "executive_producer" and user_payload.get(
+                "review_feedback"
+            ):
+                output["audience"] = user_payload["review_feedback"]
         body = json.dumps(
             {
                 "id": f"fake-{role}",
@@ -336,6 +346,7 @@ class LLMIntegrationTest(unittest.TestCase):
             30 / 29,
             places=6,
         )
+
         self.assertEqual(storyboard["narration_language"], "ja")
         self.assertTrue(storyboard["narration_adjustments"])
         self.assertNotRegex(
@@ -392,6 +403,61 @@ class LLMIntegrationTest(unittest.TestCase):
         self.assertNotIn(
             "test-secret-never-persist",
             provenance_path.read_text(encoding="utf-8"),
+        )
+
+    def test_review_feedback_reaches_llm_and_changes_artifact(self) -> None:
+        config = yaml.safe_load(
+            (ROOT / "config_llm.yaml").read_text(encoding="utf-8")
+        )
+        config["project"] = {
+            "target_award": "夜景賞",
+            "theme": "北九州の夜景を紹介する",
+            "target_duration_seconds": 30,
+        }
+        feedback = "北九州への国内旅行を検討している人"
+        state = {
+            "run_id": "feedback-test",
+            "project": config["project"],
+            "config": config,
+            "phase_results": {
+                "executive_producer": {
+                    "data": copy.deepcopy(ROLE_OUTPUTS["executive_producer"])
+                }
+            },
+            "attempts": {"executive_producer": 1},
+            "feedback": {"executive_producer": feedback},
+            "reviews": [],
+            "events": [],
+            "artifacts": [],
+        }
+        env = {
+            "AGEWEC_LLM_ENABLED": "true",
+            "AGEWEC_LLM_PROVIDER": "openai_compatible",
+            "AGEWEC_LLM_BASE_URL": (
+                f"http://127.0.0.1:{self.server.server_port}/v1"
+            ),
+            "AGEWEC_LLM_API_KEY": "test-secret-never-persist",
+            "AGEWEC_LLM_MODEL": "fake-model",
+            "AGEWEC_LLM_STRUCTURED_OUTPUT_MODE": "prompt",
+            "AGEWEC_LLM_TOKEN_PARAMETER": "max_tokens",
+            "AGEWEC_LLM_MAX_RETRIES": "1",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            update = nodes_llm.executive_producer(state)
+
+        result = update["phase_results"]["executive_producer"]
+        self.assertEqual(
+            FakeChatHandler.payloads["executive_producer"]["review_feedback"],
+            feedback,
+        )
+        self.assertEqual(result["data"]["audience"], feedback)
+        self.assertEqual(
+            result["feedback_status"],
+            "delivered_to_llm_pending_human_verification",
+        )
+        self.assertEqual(
+            result["feedback_application_evidence"],
+            "output_changed",
         )
 
     def test_japanese_narration_is_shortened_to_cut_allowance(self) -> None:
@@ -614,6 +680,63 @@ class LLMIntegrationTest(unittest.TestCase):
                 adjustment["scale_factor"],
                 places=5,
             )
+
+
+class LanguagePolicyTest(unittest.TestCase):
+    """出力言語ポリシーが全ロールの system prompt に載ることを検証する。
+
+    日本語を既定にしつつ、(1) 動画生成モデルへ渡すプロンプトは英語、
+    (2) 下流コードが値で分岐する機械語彙は不変、という2つの例外を守らせる。
+    """
+
+    def setUp(self) -> None:
+        from agewec_v2.llm.role_runner import RoleRunner
+
+        config = yaml.safe_load(
+            (ROOT / "config_llm.yaml").read_text(encoding="utf-8")
+        )
+        self.runner = RoleRunner(config)
+
+    def _prompt(self, role: str) -> str:
+        return self.runner._system_prompt(role, ROLE_SCHEMAS[role])
+
+    def test_every_role_receives_the_japanese_directive(self) -> None:
+        for role in ROLE_SCHEMAS:
+            with self.subTest(role=role):
+                prompt = self._prompt(role)
+                self.assertIn("LANGUAGE POLICY", prompt)
+                self.assertIn("日本語", prompt)
+
+    def test_generation_prompts_stay_english(self) -> None:
+        """Runwayへ送る positive/negative prompt は英語指定であること。"""
+        prompt = self._prompt("director")
+        for field in ENGLISH_PROMPT_FIELDS:
+            self.assertIn(field, prompt)
+        # 「英語で書く」例外として提示されていること
+        exception_section = prompt.split("EXCEPTION")[1]
+        self.assertIn("English", exception_section)
+        self.assertIn("positive_prompt", exception_section)
+
+    def test_machine_tokens_are_protected_from_translation(self) -> None:
+        """翻訳されると下流の照合・分岐が壊れるフィールドを守る。"""
+        prompt = self._prompt("writer_storyboard")
+        for field in MACHINE_TOKEN_FIELDS:
+            with self.subTest(field=field):
+                self.assertIn(field, prompt)
+        self.assertIn("Never translate", prompt)
+
+    def test_policy_precedes_the_schema_block(self) -> None:
+        """スキーマ提示より前に置き、指示として読ませる。"""
+        prompt = self._prompt("creative_director")
+        self.assertLess(
+            prompt.index("LANGUAGE POLICY"),
+            prompt.index("JSON Schema"),
+        )
+
+    def test_role_prompt_is_still_included(self) -> None:
+        """言語ポリシー追加で役割定義を潰していないこと。"""
+        prompt = self._prompt("director")
+        self.assertIn("You are the Director.", prompt)
 
 
 if __name__ == "__main__":

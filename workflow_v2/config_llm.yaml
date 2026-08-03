@@ -1,7 +1,7 @@
 project:
   target_award: 夜景賞、観光賞
-  theme: 北九州の昼の活動から荘厳な夜景へ移り変わる魅力を、国内外の旅行者へ伝える観光プロモーション動画
-  target_duration_seconds: 10
+  theme: 北九州の夕暮れ(夜の始まり)から荘厳な夜景へ移り変わる魅力を、国内外の旅行者へ伝える観光プロモーション動画
+  target_duration_seconds: 30
 
 autonomy_preset: manual
 
@@ -105,7 +105,7 @@ production:
   cost_guard:
     enabled: true
     limit_usd: 20.0
-  max_video_cuts_per_run: 2
+  max_video_cuts_per_run: 5
   continue_on_cut_error: false
   profile: draft
   profiles:

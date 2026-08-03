@@ -1,10 +1,17 @@
 """人間によるカット差し戻し・seed変更・レビュー画面の回帰テスト。"""
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
+
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 
 from agewec_v2.pipeline_runtime import (
     _stable_seed,
@@ -12,7 +19,10 @@ from agewec_v2.pipeline_runtime import (
     cut_visual_qa,
     image_video_production,
 )
+from agewec_v2.review import make_review_gate
 from agewec_v2.review_page import build_review_page
+from agewec_v2.run import _decision_from_user
+from agewec_v2.state_safe import SafeWorkflowState
 
 
 def _state(**overrides):
@@ -66,6 +76,40 @@ class HumanCutDecisionTest(unittest.TestCase):
             update["review_context"]["director"]["target_cut_id"], 3
         )
         self.assertIn("知らない人物", update["feedback"]["director"])
+
+    def test_human_can_override_ai_revise_and_approve(self) -> None:
+        state = _state(
+            cut_qa_results={
+                "3": {
+                    "cut_id": 3,
+                    "verdict": "revise",
+                    "recommended_route": "support_video_creator",
+                    "issues": [{"code": "DURATION_MISMATCH"}],
+                }
+            },
+            human_cut_qa_decisions={
+                "3": {
+                    "verdict": "pass",
+                    "route": "next_cut",
+                    "issue_class": "human_override",
+                    "override_reason": "映像を確認して許容",
+                    "original_verdict": "revise",
+                    "original_issues": [{"code": "DURATION_MISMATCH"}],
+                }
+            },
+        )
+
+        update = commit_cut_qa(state)
+
+        self.assertIn(3, update["approved_cut_ids"])
+        self.assertNotIn(3, update["failed_cut_ids"])
+        self.assertEqual(update["cut_qa_route"], "next_cut")
+        applied = [
+            event
+            for event in update["events"]
+            if event.get("type") == "human_cut_decision_applied"
+        ][0]
+        self.assertEqual(applied["route"], "next_cut")
 
     def test_each_route_is_dispatched(self) -> None:
         for route in (
@@ -136,6 +180,93 @@ class HumanCutDecisionTest(unittest.TestCase):
             e for e in update["events"] if e.get("type") == "cut_qa_committed"
         ][0]
         self.assertEqual(committed["decided_by"], "human")
+
+
+class HumanOverrideEndToEndTest(unittest.TestCase):
+    """CLIのy入力からcommitまで、部品間の接続を実経路で守る。"""
+
+    def test_y_overrides_ai_revise_through_review_gate_and_commit(self) -> None:
+        graph = StateGraph(SafeWorkflowState)
+        graph.add_node("review", make_review_gate("cut_visual_qa"))
+        graph.add_node("commit", commit_cut_qa)
+        graph.add_edge(START, "review")
+        graph.add_edge("review", "commit")
+        graph.add_edge("commit", END)
+        app = graph.compile(checkpointer=MemorySaver())
+        thread = {"configurable": {"thread_id": "human-override-e2e"}}
+
+        qa = {
+            "cut_id": 1,
+            "attempt": 1,
+            "verdict": "revise",
+            "recommended_route": "support_video_creator",
+            "recommended_feedback": "expected=5, actual=6",
+            "issue_class": "generation_parameters",
+            "issues": [{"code": "DURATION_MISMATCH"}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state = {
+                "run_id": "run-human-override-e2e",
+                "current_cut_id": 1,
+                "config": {
+                    "autonomy_preset": "manual",
+                    "paths": {"work_dir": directory},
+                },
+                "project": {},
+                "phase_results": {
+                    "cut_visual_qa": {"status": "error", "data": qa}
+                },
+                "cut_qa_results": {"1": qa},
+                "production_queue": [1, 2],
+                "approved_cut_ids": [],
+                "failed_cut_ids": [],
+                "production_artifacts": {
+                    "1": {"path": "/tmp/cut01.mp4", "attempt": 1}
+                },
+                "production_requests": {"1": {"seed": 123, "attempt": 1}},
+                "cut_attempts": {"1": 1},
+                "feedback": {},
+                "review_context": {},
+                "reviews": [],
+                "events": [],
+                "human_cut_qa_decisions": {},
+            }
+
+            interrupted = app.invoke(state, thread)
+            payload = interrupted["__interrupt__"][0].value
+            with patch("builtins.input", return_value="y"), redirect_stdout(
+                io.StringIO()
+            ):
+                decision = _decision_from_user(payload)
+            completed = app.invoke(Command(resume=decision), thread)
+
+            decision_record = json.loads(
+                (
+                    Path(directory)
+                    / "runs"
+                    / "run-human-override-e2e"
+                    / "cuts"
+                    / "cut_01"
+                    / "decision.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(decision["override_verdict"], "pass")
+        self.assertIn(1, completed["approved_cut_ids"])
+        self.assertNotIn(1, completed["failed_cut_ids"])
+        self.assertEqual(completed["cut_qa_route"], "next_cut")
+        self.assertEqual(completed["current_cut_id"], 2)
+        self.assertEqual(completed["human_cut_qa_decisions"], {})
+        self.assertTrue(
+            any(
+                event.get("type") == "human_cut_decision_applied"
+                for event in completed["events"]
+            )
+        )
+        self.assertEqual(decision_record["decided_by"], "human")
+        self.assertEqual(decision_record["verdict"], "pass")
+        self.assertEqual(decision_record["issue_class"], "human_override")
+        self.assertEqual(decision_record["original_verdict"], "revise")
 
 
 class SeedRegenerationIntegrationTest(unittest.TestCase):

@@ -65,6 +65,8 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
             "correction_type": "",
             "project_updates": {},
             "cut_route": "",
+            "override_verdict": "",
+            "override_reason": "",
         }
     if isinstance(value, dict):
         action = value.get("action", "approve")
@@ -78,6 +80,9 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
         project_updates = value.get("project_updates") or {}
         if not isinstance(project_updates, dict):
             raise ValueError("project_updates must be an object")
+        override_verdict = str(value.get("override_verdict") or "")
+        if override_verdict not in {"", "pass"}:
+            raise ValueError("override_verdict must be empty or pass")
         return {
             "action": action,
             "feedback": str(value.get("feedback") or ""),
@@ -85,6 +90,8 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
             "correction_type": str(value.get("correction_type") or ""),
             "project_updates": project_updates,
             "cut_route": str(value.get("cut_route") or ""),
+            "override_verdict": override_verdict,
+            "override_reason": str(value.get("override_reason") or ""),
         }
     return {
         "action": "approve",
@@ -93,6 +100,8 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
         "correction_type": "",
         "project_updates": {},
         "cut_route": "",
+        "override_verdict": "",
+        "override_reason": "",
     }
 
 
@@ -176,6 +185,7 @@ def make_review_gate(
 
         payload = {
             "kind": "review_gate",
+            "run_id": state.get("run_id"),
             "phase": phase,
             "source_phase": source,
             "label": label or phase.replace("_", " ").title(),
@@ -186,6 +196,16 @@ def make_review_gate(
             "blocking_issues": result.get("blocking_issues", []),
             "warnings": result.get("warnings", []),
             "artifacts": result.get("artifacts", []),
+            "data": result.get("data", {}),
+            "previous_data": result.get("previous_data"),
+            "attempt": result.get("attempt"),
+            "feedback_received": result.get("feedback_received", ""),
+            "feedback_origin": result.get("feedback_origin"),
+            "feedback_status": result.get("feedback_status", "not_provided"),
+            "feedback_application_evidence": result.get(
+                "feedback_application_evidence"
+            ),
+            "paths": config.get("paths", {}),
             "actions": ["approve", "retry_with_feedback", "abort"],
             "require_human": force_human,
             "retry_fields": {
@@ -265,6 +285,7 @@ def make_review_gate(
                 "source_review": phase,
                 "target_cut_id": decision.get("target_cut_id"),
                 "correction_type": decision.get("correction_type", ""),
+                "feedback_origin": "human",
             }
             if source == "executive_producer":
                 project = _apply_project_updates(
@@ -289,6 +310,8 @@ def make_review_gate(
                 "target_cut_id": decision.get("target_cut_id"),
                 "correction_type": decision.get("correction_type", ""),
                 "project_updates": decision.get("project_updates", {}),
+                "override_verdict": decision.get("override_verdict"),
+                "override_reason": decision.get("override_reason", ""),
             }
         )
         events = list(state.get("events", []))
@@ -318,17 +341,32 @@ def make_review_gate(
         }
         # Cut QAレビューで人間が差し戻し先を選んだ場合、その判断を
         # cut_id 別に保存する。commit_cut_qa がAI判定より優先して読む。
-        if phase == "cut_visual_qa" and decision.get("cut_route"):
+        if phase == "cut_visual_qa" and (
+            decision.get("cut_route") or decision.get("override_verdict")
+        ):
             current = state.get("current_cut_id")
             if current is not None:
                 decisions = dict(state.get("human_cut_qa_decisions", {}))
+                override_verdict = decision.get("override_verdict")
                 decisions[str(int(current))] = {
-                    "verdict": "revise",
-                    "route": decision["cut_route"],
-                    "feedback": decision.get("feedback", ""),
-                    "issue_class": decision.get(
-                        "correction_type", "human_review"
+                    "verdict": override_verdict or "revise",
+                    "route": (
+                        "next_cut"
+                        if override_verdict == "pass"
+                        else decision["cut_route"]
                     ),
+                    "feedback": decision.get("feedback", ""),
+                    "issue_class": (
+                        decision.get("correction_type")
+                        or (
+                            "human_override"
+                            if override_verdict
+                            else "human_review"
+                        )
+                    ),
+                    "override_reason": decision.get("override_reason", ""),
+                    "original_verdict": result.get("data", {}).get("verdict"),
+                    "original_issues": result.get("data", {}).get("issues", []),
                 }
                 update["human_cut_qa_decisions"] = decisions
         return update

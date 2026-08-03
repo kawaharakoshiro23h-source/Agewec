@@ -79,6 +79,15 @@ def _complete(
 ) -> dict[str, Any]:
     attempts = dict(state.get("attempts", {}))
     attempts[phase] = attempts.get(phase, 0) + 1
+    phase_results = dict(state.get("phase_results", {}))
+    previous_result = phase_results.get(phase, {})
+    feedback_received = _phase_feedback(state, phase)
+    feedback_context = state.get("review_context", {}).get(phase, {})
+    feedback_origin = (
+        feedback_context.get("feedback_origin")
+        if feedback_received
+        else None
+    )
     result = {
         "phase": phase,
         "status": status,
@@ -89,9 +98,20 @@ def _complete(
         "blocking_issues": blocking_issues or [],
         "warnings": warnings or [],
         "attempt": attempts[phase],
-        "feedback_applied": _phase_feedback(state, phase),
+        # Deterministic nodes do not interpret free-form feedback. Keep receipt
+        # and application separate so provenance never claims that merely
+        # carrying a string changed the artifact.
+        "feedback_received": feedback_received,
+        "feedback_origin": feedback_origin,
+        "feedback_applied": False,
+        "feedback_status": (
+            "received_not_applied_by_deterministic_node"
+            if feedback_received
+            else "not_provided"
+        ),
     }
-    phase_results = dict(state.get("phase_results", {}))
+    if previous_result.get("data") is not None:
+        result["previous_data"] = previous_result.get("data")
     phase_results[phase] = result
     all_artifacts = list(state.get("artifacts", []))
     all_artifacts.extend(artifacts or [])
@@ -837,12 +857,43 @@ def review_board(state: WorkflowState) -> dict[str, Any]:
     )
 
 
+# 秘匿すべきキー。部分一致で判定する。
+_SECRET_KEY_HINTS = (
+    "api_key",
+    "apikey",
+    "secret",
+    "password",
+    "credential",
+    "authorization",
+)
+# 「token」を部分一致で弾くと prompt_tokens / completion_tokens / total_tokens
+# といった利用統計まで潰れてしまう（レポートでトークン数を出せなくなる）。
+# 認証情報として使われる語だけを完全一致で秘匿する。
+_SECRET_TOKEN_KEYS = frozenset(
+    {
+        "token",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "id_token",
+        "bearer_token",
+        "session_token",
+    }
+)
+
+
+def _is_secret_key(key: Any) -> bool:
+    lowered = str(key).lower()
+    if any(hint in lowered for hint in _SECRET_KEY_HINTS):
+        return True
+    return lowered in _SECRET_TOKEN_KEYS
+
+
 def _sanitized(value: Any) -> Any:
     if isinstance(value, dict):
         clean = {}
         for key, child in value.items():
-            lowered = str(key).lower()
-            if any(token in lowered for token in ("api_key", "token", "secret")):
+            if _is_secret_key(key):
                 clean[key] = "***"
             else:
                 clean[key] = _sanitized(child)

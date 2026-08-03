@@ -15,6 +15,49 @@ from .schemas import ROLE_SCHEMAS
 
 PROMPT_ROOT = WORKFLOW_ROOT / "agewec_v2" / "prompts"
 
+# --- 出力言語ポリシー（全ロール共通）-----------------------------------------
+# 既定は日本語。ただし2種類の例外がある。
+#
+#   1. 動画生成モデルへ渡す文字列（positive_prompt / negative_prompt）
+#      Runway/Veo/Seedance は英語プロンプトで最も安定するため英語で書かせる。
+#   2. 機械語彙（asset_id, enum値, time_of_day など）
+#      下流のコードが値そのもので分岐・照合するため、翻訳されると壊れる。
+#      例: visual_role は素材スコアリングとナレーション補完で英語比較される。
+#      （time_of_day は normalize_time_of_day が日本語も吸収するが、
+#        表記ゆれを増やさないため英語に固定する）
+
+# 動画生成モデルへ送るため英語で書かせるフィールド
+ENGLISH_PROMPT_FIELDS = ("positive_prompt", "negative_prompt")
+
+# 翻訳せずそのまま返させる機械語彙フィールド
+MACHINE_TOKEN_FIELDS = (
+    "asset_id",
+    "media_requirement",
+    "motion_intensity",
+    "time_of_day",
+    "visual_role",
+    "verdict",
+    "route",
+    "energy_curve",
+    "stability",
+)
+
+LANGUAGE_POLICY = (
+    "LANGUAGE POLICY (applies to every field you return):\n"
+    "1. Write all human-readable prose in Japanese (日本語). This includes "
+    "titles, loglines, scenes, narration, reasons, rationales, constraints, "
+    "success criteria, issues, recommendations, and any other explanatory "
+    "text. Do not write these in English.\n"
+    "2. EXCEPTION - write these fields in English, because they are sent "
+    "directly to the video generation model, which performs best in "
+    "English: " + ", ".join(ENGLISH_PROMPT_FIELDS) + ".\n"
+    "3. EXCEPTION - return these fields as machine tokens exactly as "
+    "specified by the schema and upstream context. Never translate or "
+    "localise them: " + ", ".join(MACHINE_TOKEN_FIELDS) + ", plus every "
+    "value constrained by an enum in the schema.\n"
+    "Numeric and identifier fields (ids, seconds, scores) are unaffected.\n"
+)
+
 
 @dataclass(frozen=True)
 class RoleRunResult:
@@ -73,6 +116,12 @@ class RoleRunner:
         )
         return (
             f"{role_prompt}\n\n"
+            f"{LANGUAGE_POLICY}\n"
+            "If review_feedback in the user JSON is non-empty, treat it as a "
+            "mandatory revision instruction. Reflect it in the returned "
+            "artifact while preserving approved constraints that it does not "
+            "explicitly change. Never claim that feedback was applied unless "
+            "the returned fields actually reflect it.\n\n"
             "Return one JSON object only. Do not use Markdown fences.\n"
             f"Your output must validate against this JSON Schema:\n{schema_json}"
         )

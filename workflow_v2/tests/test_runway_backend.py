@@ -227,6 +227,7 @@ class RunwayBackendTest(unittest.TestCase):
         self.assertNotIn("audio", payload)     # 音声非内蔵なので指定なし
         self.assertEqual(payload["model"], "gen4.5")
         self.assertEqual(payload["seed"], 4242)
+        self.assertEqual(payload["duration"], 5)
 
     def test_seedance_omits_unverified_audio_and_negative_fields(self) -> None:
         """未確認フィールドを送って実APIで400になる事故を防ぐ。"""

@@ -60,6 +60,38 @@ def _with_llm_metadata(
     return update
 
 
+def _with_llm_feedback_status(
+    update: dict[str, Any],
+    phase: str,
+    feedback: str,
+) -> dict[str, Any]:
+    """Record delivery and observable output change without overclaiming.
+
+    A changed JSON artifact is evidence that a retry produced a new result, but
+    it is not proof that every semantic instruction was followed. Human review
+    remains the authority for that judgment.
+    """
+    phase_results = dict(update["phase_results"])
+    result = dict(phase_results[phase])
+    result["feedback_received"] = feedback
+    if feedback:
+        previous = result.get("previous_data")
+        current = result.get("data")
+        result["feedback_applied"] = None
+        result["feedback_status"] = "delivered_to_llm_pending_human_verification"
+        result["feedback_application_evidence"] = (
+            "output_changed"
+            if previous is not None and previous != current
+            else "output_unchanged_or_no_baseline"
+        )
+    else:
+        result["feedback_applied"] = False
+        result["feedback_status"] = "not_provided"
+    phase_results[phase] = result
+    update["phase_results"] = phase_results
+    return update
+
+
 def _llm_error(
     state: WorkflowState,
     phase: str,
@@ -95,10 +127,11 @@ def _run_role(
         return fallback(state)
 
     try:
+        feedback = _feedback(state, phase)
         run = RoleRunner(state.get("config", {})).run(
             role=phase,
             upstream=upstream,
-            feedback=_feedback(state, phase),
+            feedback=feedback,
         )
         raw = run.output.model_dump(mode="json")
         data = transform(raw) if transform else raw
@@ -111,6 +144,7 @@ def _run_role(
             confidence=float(data.get("confidence", 0.9)),
             warnings=warnings,
         )
+        update = _with_llm_feedback_status(update, phase, feedback)
         return _with_llm_metadata(update, phase, run.metadata)
     except Exception as exc:
         if settings.strict_mode:

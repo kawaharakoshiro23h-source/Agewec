@@ -192,6 +192,12 @@ class PhaseOneToFiveTest(unittest.TestCase):
         thread = {"configurable": {"thread_id": "phase-one-update"}}
         first = graph.invoke(self.state, thread)
         self.assertIn("__interrupt__", first)
+        first_payload = first["__interrupt__"][0].value
+        self.assertEqual(first_payload["phase"], "executive_producer")
+        self.assertEqual(
+            first_payload["data"],
+            first["phase_results"]["executive_producer"]["data"],
+        )
         retried = graph.invoke(
             Command(
                 resume={
@@ -215,6 +221,43 @@ class PhaseOneToFiveTest(unittest.TestCase):
             ],
             55,
         )
+        retry_payload = retried["__interrupt__"][0].value
+        self.assertEqual(retry_payload["phase"], "executive_producer")
+        self.assertIsNotNone(retry_payload["previous_data"])
+
+    def test_deterministic_node_does_not_claim_feedback_was_applied(self) -> None:
+        self.state["feedback"] = {
+            "executive_producer": "対象を国内旅行者だけに変更"
+        }
+        update = nodes.executive_producer(self.state)
+        result = update["phase_results"]["executive_producer"]
+
+        self.assertEqual(
+            result["feedback_received"],
+            "対象を国内旅行者だけに変更",
+        )
+        self.assertFalse(result["feedback_applied"])
+        self.assertEqual(
+            result["feedback_status"],
+            "received_not_applied_by_deterministic_node",
+        )
+        self.assertEqual(
+            result["data"]["audience"],
+            "北九州をまだ訪れたことのない国内外の旅行者",
+        )
+
+    def test_feedback_origin_is_preserved_for_display(self) -> None:
+        self.state["feedback"] = {
+            "executive_producer": "QAが生成した修正情報"
+        }
+        self.state["review_context"] = {
+            "executive_producer": {"feedback_origin": "ai_qa"}
+        }
+
+        update = nodes.executive_producer(self.state)
+        result = update["phase_results"]["executive_producer"]
+
+        self.assertEqual(result["feedback_origin"], "ai_qa")
 
     def test_h2_asset_correction_routes_to_asset_curator(self) -> None:
         graph = build_graph(checkpointer=MemorySaver())
