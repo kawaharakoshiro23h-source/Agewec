@@ -177,6 +177,11 @@ if not raw or not source_video.is_file():
 
 ## P0-4. CLIの入力ミスで実行が全消滅する
 
+**対応状況: ⚠️ CLI入力バリデーションは修正済み / 状態の永続化は未対応**
+
+対象カットIDは1以上の整数、目標尺は0より大きい有限数になるまで
+再入力する。`Cut2`・負数・ゼロ・`NaN`・`inf`でプロセスは終了しない。
+
 ### 症状
 
 ```
@@ -201,7 +206,7 @@ decision["target_cut_id"] = int(cut_id)      # バリデーションなし
 
 ### 修正案
 
-1. **入力の再試行ループ**（10行程度）
+1. **入力の再試行ループ** ✅ 実装済み
 
    ```python
    while True:
@@ -397,11 +402,11 @@ Seedance 2 Text-to-Video は Reference image に対応している。
 | 生成失敗の詳細をattempt別JSONとCut QA画面へ保存 | `test_backend_request_contracts.py` / `test_run_cli.py` |
 | Provenanceが空パスやディレクトリを動画としてコピーする問題 | `test_runtime_safety.py` |
 | Sequence QAで全カットの成果物ファイル実在を確認 | `test_runtime_safety.py` |
+| CLIのカットID・目標尺を再入力可能にし、不正値での強制終了を防止 | `test_run_cli.py` |
 
 ---
 
 ## 推奨対応順（8/7まで）
 
-1. **P0-4**（入力バリデーション）
-2. **P1-3**（theme再注入）
-3. SqliteSaver / P2系 / リファクタリング … 締切後
+1. **P1-3**（theme再注入）
+2. SqliteSaver / P2系 / リファクタリング … 締切後

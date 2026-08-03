@@ -194,6 +194,69 @@ class RunCliReviewDisplayTest(unittest.TestCase):
 
         self.assertEqual(decision, {"action": "approve", "feedback": ""})
 
+    def test_invalid_duration_reprompts_instead_of_crashing(self) -> None:
+        payload = {
+            "phase": "executive_producer",
+            "label": "Executive Producer",
+            "data": {},
+        }
+        output = io.StringIO()
+        answers = ["r", "30秒に変更", "abc", "0", "NaN", "inf", "30"]
+
+        with patch("builtins.input", side_effect=answers), redirect_stdout(output):
+            decision = _decision_from_user(payload)
+
+        self.assertEqual(
+            decision["project_updates"]["target_duration_seconds"],
+            30.0,
+        )
+        self.assertGreaterEqual(
+            output.getvalue().count("0より大きい秒数"),
+            4,
+        )
+
+    def test_invalid_cut_id_reprompts_instead_of_crashing(self) -> None:
+        payload = {
+            "phase": "director",
+            "label": "Director",
+            "data": {},
+        }
+        output = io.StringIO()
+        answers = ["r", "Cut 2だけ修正", "Cut2", "0", "-1", "2.5", "2", ""]
+
+        with patch("builtins.input", side_effect=answers), redirect_stdout(output):
+            decision = _decision_from_user(payload)
+
+        self.assertEqual(decision["target_cut_id"], 2)
+        self.assertEqual(decision["correction_type"], "direction")
+        self.assertGreaterEqual(
+            output.getvalue().count("1以上の整数"),
+            4,
+        )
+
+    def test_blank_optional_values_keep_existing_settings(self) -> None:
+        executive = {
+            "phase": "executive_producer",
+            "label": "Executive Producer",
+            "data": {},
+        }
+        director = {
+            "phase": "director",
+            "label": "Director",
+            "data": {},
+        }
+        with patch(
+            "builtins.input", side_effect=["r", "文言だけ修正", ""]
+        ), redirect_stdout(io.StringIO()):
+            executive_decision = _decision_from_user(executive)
+        with patch(
+            "builtins.input", side_effect=["r", "全カット修正", "", ""]
+        ), redirect_stdout(io.StringIO()):
+            director_decision = _decision_from_user(director)
+
+        self.assertNotIn("project_updates", executive_decision)
+        self.assertNotIn("target_cut_id", director_decision)
+
 
 if __name__ == "__main__":
     unittest.main()

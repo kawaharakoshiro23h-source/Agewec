@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import uuid
 from pathlib import Path
 from typing import Any
@@ -98,6 +99,36 @@ def _changed_top_level_fields(
 def load_config(path: Path | None = None) -> dict[str, Any]:
     config_path = path or ROOT / "config_llm.yaml"
     return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+
+
+def _prompt_optional_positive_int(prompt: str) -> int | None:
+    """Enterは未指定、それ以外は正の整数になるまで再入力する。"""
+    while True:
+        raw = input(prompt).strip()
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        print("  1以上の整数を入力してください（例: 2）。")
+
+
+def _prompt_optional_positive_float(prompt: str) -> float | None:
+    """Enterは未指定、それ以外は正の有限数になるまで再入力する。"""
+    while True:
+        raw = input(prompt).strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if math.isfinite(value) and value > 0:
+            return value
+        print("  0より大きい秒数を数値で入力してください（例: 30）。")
 
 
 def _decision_from_user(payload: dict[str, Any]) -> dict[str, Any]:
@@ -236,23 +267,23 @@ def _decision_from_user(payload: dict[str, Any]) -> dict[str, Any]:
             "feedback": feedback,
         }
         if payload.get("phase") == "executive_producer":
-            duration = input(
+            duration = _prompt_optional_positive_float(
                 "  目標尺を変更する場合は秒数を入力（変更なしはEnter）: "
-            ).strip()
-            if duration:
+            )
+            if duration is not None:
                 decision["project_updates"] = {
-                    "target_duration_seconds": float(duration)
+                    "target_duration_seconds": duration
                 }
         if payload.get("phase") in {
             "asset_curator",
             "director",
             "support_video_creator",
         }:
-            cut_id = input(
+            cut_id = _prompt_optional_positive_int(
                 "  対象カットID（全体修正はEnter）: "
-            ).strip()
-            if cut_id:
-                decision["target_cut_id"] = int(cut_id)
+            )
+            if cut_id is not None:
+                decision["target_cut_id"] = cut_id
         if payload.get("phase") in {
             "director",
             "support_video_creator",
