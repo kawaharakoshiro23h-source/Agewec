@@ -1,6 +1,7 @@
 """Backend-native request contracts and paid retry safety tests."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -8,6 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import agewec_v2.pipeline_runtime as runtime
+from agewec_v2.backends.base import VideoResult
+from agewec_v2.backends.runway import RunwayError
 
 
 def _shot(image_path: str) -> dict:
@@ -77,6 +80,61 @@ def _base_state(directory: str, image_path: str, backend: str) -> dict:
             "comfy": {"workflow_api_json": "workflows/ltx_i2v_api.json"},
         },
     }
+
+
+def _production_state(directory: str, image_path: str, backend: str) -> dict:
+    state = _base_state(directory, image_path, backend)
+    request = {
+        "cut_id": 1,
+        "backend": backend,
+        "model": "gen4.5",
+        "image_path": image_path,
+        "positive_prompt": "cinematic night view",
+        "negative_prompt": "",
+        "requested_seconds": 5.0,
+        "actual_seconds": 5.0,
+        "width": 1280,
+        "height": 720,
+        "ratio": "1280:720",
+        "seed": 123,
+    }
+    state.update(
+        {
+            "current_cut_id": 1,
+            "production_queue": [1],
+            "production_requests": {"1": request},
+        }
+    )
+    state["config"]["runway"]["input_image"] = {
+        "max_edge": 4096,
+        "jpeg_quality": 2,
+    }
+    return state
+
+
+class _CapturingAdapter:
+    def __init__(self, destination: Path) -> None:
+        self.destination = destination
+        self.request = None
+
+    def generate(self, request):
+        self.request = request
+        self.destination.parent.mkdir(parents=True, exist_ok=True)
+        self.destination.write_bytes(b"video")
+        return VideoResult(
+            output_path=str(self.destination),
+            provider="runway",
+            model="gen4.5",
+            requested_seconds=5.0,
+            billed_seconds=5.0,
+            actual_seconds=5.0,
+            settings={"ratio": "1280:720"},
+        )
+
+
+class _FailingAdapter:
+    def generate(self, request):
+        raise RunwayError("signed upload timed out")
 
 
 class BackendRequestContractTest(unittest.TestCase):
@@ -180,6 +238,112 @@ class BackendRequestContractTest(unittest.TestCase):
         qa = update["phase_results"]["cut_visual_qa"]["data"]
         self.assertEqual(qa["verdict"], "pass")
         self.assertEqual(qa["issues"], [])
+
+    def test_large_runway_image_is_resized_without_changing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "large-source.jpg"
+            source.write_bytes(b"original-image")
+            state = _production_state(directory, str(source), "runway")
+            adapter = _CapturingAdapter(Path(directory) / "generated.mp4")
+
+            def fake_downscale(src, destination, **kwargs):
+                self.assertEqual(Path(src), source)
+                self.assertEqual(kwargs["max_edge"], 4096)
+                Path(destination).write_bytes(b"resized-image")
+                return str(destination)
+
+            probes = [
+                {
+                    "width": 8136,
+                    "height": 5424,
+                    "bytes": len(b"original-image"),
+                },
+                {
+                    "width": 4096,
+                    "height": 2731,
+                    "bytes": len(b"resized-image"),
+                },
+            ]
+            with patch.object(
+                runtime, "probe_media", side_effect=probes
+            ), patch.object(
+                runtime, "downscale_image", side_effect=fake_downscale
+            ), patch.object(
+                runtime, "_video_backend", return_value=adapter
+            ):
+                update = runtime.image_video_production(state)
+
+            self.assertEqual(source.read_bytes(), b"original-image")
+            self.assertIsNotNone(adapter.request)
+            prepared = Path(adapter.request.image_path)
+            self.assertNotEqual(prepared, source)
+            self.assertEqual(prepared.name, "attempt_01_runway_input.jpg")
+            self.assertEqual(prepared.read_bytes(), b"resized-image")
+            generation = update["production_artifacts"]["1"]["generation"]
+            self.assertIs(generation["input_preparation"]["resized"], True)
+            self.assertEqual(
+                state["production_requests"]["1"]["image_path"],
+                str(source),
+            )
+
+    def test_comfy_generation_never_uses_runway_image_preparation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.jpg"
+            source.write_bytes(b"source-image")
+            state = _production_state(directory, str(source), "comfy")
+            adapter = _CapturingAdapter(Path(directory) / "generated.mp4")
+            with patch.object(
+                runtime, "_prepare_runway_input_image"
+            ) as prepare, patch.object(
+                runtime, "_video_backend", return_value=adapter
+            ):
+                update = runtime.image_video_production(state)
+
+            prepare.assert_not_called()
+            self.assertEqual(
+                update["phase_results"]["image_video_production"]["status"],
+                "success",
+            )
+            self.assertEqual(adapter.request.image_path, str(source))
+
+    def test_generation_failure_is_persisted_and_reaches_cut_qa(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.jpg"
+            source.write_bytes(b"source-image")
+            state = _production_state(directory, str(source), "runway")
+            source_probe = {
+                "width": 1280,
+                "height": 720,
+                "bytes": source.stat().st_size,
+            }
+            with patch.object(
+                runtime, "probe_media", return_value=source_probe
+            ), patch.object(
+                runtime, "_video_backend", return_value=_FailingAdapter()
+            ):
+                update = runtime.image_video_production(state)
+
+            result = update["phase_results"]["image_video_production"]
+            self.assertEqual(result["status"], "error")
+            error_path = Path(result["data"]["error_path"])
+            self.assertTrue(error_path.is_file())
+            error = json.loads(error_path.read_text(encoding="utf-8"))
+            self.assertEqual(error["exception_type"], "RunwayError")
+            self.assertEqual(error["message"], "signed upload timed out")
+            self.assertIn("Traceback", error["traceback"])
+
+            qa_state = {**state, **update}
+            qa_update = runtime.cut_visual_qa(qa_state)
+            qa = qa_update["phase_results"]["cut_visual_qa"]["data"]
+            self.assertEqual(qa["verdict"], "revise")
+            self.assertEqual(
+                qa["generation_error"]["message"],
+                "signed upload timed out",
+            )
+            self.assertIn(
+                "signed upload timed out",
+                qa["issues"][0]["description"],
+            )
 
     def test_unchanged_paid_technical_retry_is_blocked_before_api_call(self) -> None:
         request = {

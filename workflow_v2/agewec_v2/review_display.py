@@ -242,6 +242,15 @@ def _support_video(data: dict[str, Any]) -> list[str]:
 
 
 def _qa_reason(data: dict[str, Any]) -> str:
+    generation_error = data.get("generation_error") or {}
+    if generation_error:
+        error_type = _text(
+            generation_error.get("exception_type") or "GenerationError"
+        )
+        message = _text(
+            generation_error.get("message") or "詳細なし"
+        )
+        return f"動画生成で{error_type}が発生しました: {message}"
     issues = data.get("issues") or []
     issue_codes = {item.get("code") for item in issues if isinstance(item, dict)}
     if "MEDIA_TECHNICAL_ERROR" in issue_codes and not data.get("artifact_path"):

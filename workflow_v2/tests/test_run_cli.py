@@ -134,6 +134,31 @@ class RunCliReviewDisplayTest(unittest.TestCase):
         self.assertNotIn("runtime_transient", rendered)
         self.assertEqual(decision["cut_route"], "image_video_production")
 
+    def test_failed_cut_qa_shows_the_upstream_generation_error(self) -> None:
+        payload = {
+            "phase": "cut_visual_qa",
+            "status": "error",
+            "data": {
+                "cut_id": 1,
+                "attempt": 1,
+                "artifact_path": None,
+                "verdict": "revise",
+                "issues": [{"code": "MEDIA_TECHNICAL_ERROR"}],
+                "generation_error": {
+                    "exception_type": "RunwayError",
+                    "message": "signed upload timed out",
+                },
+                "recommended_route": "image_video_production",
+                "source_image": "/tmp/kokura.jpg",
+            },
+        }
+
+        rendered = "\n".join(review_summary_lines(payload))
+
+        self.assertIn("RunwayError", rendered)
+        self.assertIn("signed upload timed out", rendered)
+        self.assertNotIn("理由: 動画生成結果のファイル", rendered)
+
     def test_y_explicitly_overrides_failed_qa(self) -> None:
         payload = {
             "kind": "review_gate",

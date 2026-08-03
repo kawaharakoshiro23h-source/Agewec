@@ -175,6 +175,10 @@ runway:
   poll_interval_seconds: 5
   timeout_seconds: 900
   ratio: "1280:720"
+  input_image:
+    # Runway送信時だけ縮小し、assets_dlの原本は変更しない。
+    max_edge: 4096
+    jpeg_quality: 2
   models:
     gen4.5:
       # Runway公式: 2〜10秒の整数尺。

@@ -206,6 +206,44 @@ class RunwayBackendTest(unittest.TestCase):
             "runway://ephemeral/source.jpg",
         )
 
+    def test_signed_upload_uses_generation_timeout(self) -> None:
+        signed_timeout = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/uploads":
+                return httpx.Response(
+                    200,
+                    json={
+                        "uploadUrl": "https://upload.invalid/signed-upload",
+                        "fields": {"key": "source.jpg"},
+                        "runwayUri": "runway://ephemeral/source.jpg",
+                    },
+                )
+            if request.url.path == "/signed-upload":
+                signed_timeout.update(request.extensions.get("timeout", {}))
+                return httpx.Response(204)
+            return httpx.Response(404)
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),
+            timeout=0.01,
+        )
+        backend = RunwayBackend(
+            api_key="test-key",
+            model="gen4.5",
+            models=MODELS,
+            output_path_for=lambda cut, attempt: "/tmp/output.mp4",
+            timeout=321,
+            client=client,
+        )
+
+        uri = backend._upload_image(self.image)
+
+        self.assertEqual(uri, "runway://ephemeral/source.jpg")
+        self.assertEqual(signed_timeout.get("connect"), 321.0)
+        self.assertEqual(signed_timeout.get("read"), 321.0)
+        self.assertEqual(signed_timeout.get("write"), 321.0)
+
     def test_rounds_up_duration_and_bills_the_rounded_value(self) -> None:
         """5秒要求 → 6秒生成・6秒課金（短くはしない）。"""
         result = self._backend().generate(self._request(seconds=5.0))

@@ -70,7 +70,7 @@ class RunwayBackend:
         self.ratio = ratio
         self.poll_interval = float(poll_interval)
         self.timeout = float(timeout)
-        self._client = client or httpx.Client(timeout=60.0)
+        self._client = client or httpx.Client(timeout=self.timeout)
 
     # ------------------------------------------------------------ 能力定義
     def capabilities(self, model: str | None = None) -> Capabilities:
@@ -137,6 +137,7 @@ class RunwayBackend:
                 str(upload_url),
                 data=fields,
                 files={"file": (image_path.name, stream, mime)},
+                timeout=self.timeout,
             )
         if upload.status_code >= 400:
             raise RunwayError(

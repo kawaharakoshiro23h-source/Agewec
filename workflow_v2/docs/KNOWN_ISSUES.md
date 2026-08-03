@@ -14,7 +14,14 @@
 
 ---
 
-## P0-1. 巨大画像でRunwayアップロードが失敗する
+## P0-1. Runwayアップロード失敗（大画像との相関あり・原因未確定）
+
+**対応状況: ✅ 予防策実装済み / 実Runway APIでの再確認待ち**
+
+- Runway送信時のみ、長辺4096px超の画像を作業用JPEGへ縮小
+- `assets_dl`の原本とProductionRequestは変更しない
+- 署名付きアップロードに`timeout_seconds`を明示適用
+- Comfy経路では前処理を実行しないことをテストで保護
 
 ### 症状
 
@@ -77,6 +84,12 @@ print(b._upload_image(pathlib.Path('assets_dl/asset-001_夜景_皿倉_皿倉山�
 
 ## P0-2. 生成失敗の理由が画面にもディスクにも残らない
 
+**対応状況: ✅ 修正済み**
+
+- `cuts/cut_XX/attempt_NN_error.json`に例外型・本文・スタック・送信条件を保存
+- Cut Visual QAの「理由」に上流の実エラーを表示
+- review policyが`never`でもエラーJSONは必ず作成
+
 ### 症状
 
 Runway呼び出しが例外で落ちても、利用者が見るのは下流QAの
@@ -113,6 +126,12 @@ review policy とは独立に、生成の失敗を必ずディスクへ残す。
 ---
 
 ## P0-3. provenance が空パスでクラッシュする
+
+**対応状況: ✅ 修正済み**
+
+`final_output`が空・未存在・ディレクトリの場合は、Package用フォルダを
+作る前にエラー終了する。`is_file()`を使い、`Path("") == Path(".")`の
+誤判定を防ぐ。
 
 ### 症状
 
@@ -207,6 +226,12 @@ decision["target_cut_id"] = int(cut_id)      # バリデーションなし
 ---
 
 ## P1-1. Sequence QA が成果物の無いカットを合格させる
+
+**対応状況: ✅ 修正済み**
+
+全Storyboardカットについて、`production_artifacts`の有無と`path`が
+実在するファイルかを確認する。空パス・未存在ファイル・ディレクトリは
+`revise` とし、Post Productionへ進ませない。
 
 ### 症状
 
@@ -368,15 +393,15 @@ Seedance 2 Text-to-Video は Reference image に対応している。
 | 人間上書き時の `issue_class` が空 → `human_override` を記録 | 同上 |
 | QAの自動提案が「あなたの修正指示」と誤表示 | `feedback_origin` で切替 |
 | LLM出力が英語混じり → 日本語化（生成プロンプトのみ英語、機械語彙は不変） | `test_llm_integration.py::LanguagePolicyTest` |
+| Runway大画像を原本非変更で長辺4096pxへ縮小し、アップロードtimeoutを統一 | `test_backend_request_contracts.py` / `test_runway_backend.py` |
+| 生成失敗の詳細をattempt別JSONとCut QA画面へ保存 | `test_backend_request_contracts.py` / `test_run_cli.py` |
+| Provenanceが空パスやディレクトリを動画としてコピーする問題 | `test_runtime_safety.py` |
+| Sequence QAで全カットの成果物ファイル実在を確認 | `test_runtime_safety.py` |
 
 ---
 
 ## 推奨対応順（8/7まで）
 
-1. **P0-2**（エラーを残す）… P0-1の原因特定がこれ無しには進まない
-2. **P0-3**（provenanceの1行修正）… 完走を阻む最後の壁
-3. **P0-4**（入力バリデーション + SqliteSaver）… 事故で全部消えるのを止める
-4. **P0-1**（アップロードtimeout / 送信前リサイズ）
-5. **P1-3**（theme再注入）… 承認作業のストレスが大きく減る
-6. P1-1 / P1-2 … 余力があれば
-7. P2系 … 締切後
+1. **P0-4**（入力バリデーション）
+2. **P1-3**（theme再注入）
+3. SqliteSaver / P2系 / リファクタリング … 締切後

@@ -18,6 +18,7 @@ import math
 import re
 import shutil
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -573,6 +574,94 @@ def _unchanged_technical_retry(
     ) == _technical_request_signature(request)
 
 
+def _prepare_runway_input_image(
+    state: WorkflowState,
+    cut_id: int,
+    attempt: int,
+    request: dict[str, Any],
+    output_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Runwayに送る参照画像だけを安全な寸法へ縮小する。
+
+    原本とProductionRequestは変更せず、Runway Adapterへ渡す一時的な
+    requestの`image_path`だけを差し替える。Comfyなど他のバックエンド
+    からはこの関数を呼ばない。
+    """
+    runway_config = dict(state.get("config", {}).get("runway", {}))
+    image_config = dict(runway_config.get("input_image", {}))
+    max_edge = int(image_config.get("max_edge", 4096))
+    quality = int(image_config.get("jpeg_quality", 2))
+    if max_edge <= 0:
+        raise ValueError("runway.input_image.max_edge must be positive")
+    if not 1 <= quality <= 31:
+        raise ValueError(
+            "runway.input_image.jpeg_quality must be between 1 and 31"
+        )
+
+    source = Path(str(request.get("image_path") or ""))
+    if not source.is_file():
+        raise MediaToolError(f"Runway参照画像が存在しない: {source}")
+    original = probe_media(source)
+    width = int(original.get("width") or 0)
+    height = int(original.get("height") or 0)
+    if width <= 0 or height <= 0:
+        raise MediaToolError(
+            f"Runway参照画像の寸法を取得できない: {source}"
+        )
+
+    preparation: dict[str, Any] = {
+        "cut_id": cut_id,
+        "attempt": attempt,
+        "original_path": str(source),
+        "original_width": width,
+        "original_height": height,
+        "original_bytes": int(original.get("bytes") or source.stat().st_size),
+        "max_edge": max_edge,
+        "resized": False,
+        "prepared_path": str(source),
+        "prepared_width": width,
+        "prepared_height": height,
+        "prepared_bytes": int(
+            original.get("bytes") or source.stat().st_size
+        ),
+    }
+    if max(width, height) <= max_edge:
+        return dict(request), preparation
+
+    destination = output_dir / f"attempt_{attempt:02d}_runway_input.jpg"
+    downscale_image(
+        source,
+        destination,
+        max_edge=max_edge,
+        quality=quality,
+    )
+    prepared = probe_media(destination)
+    prepared_width = int(prepared.get("width") or 0)
+    prepared_height = int(prepared.get("height") or 0)
+    if (
+        prepared_width <= 0
+        or prepared_height <= 0
+        or max(prepared_width, prepared_height) > max_edge
+    ):
+        raise MediaToolError(
+            "Runway参照画像の縮小結果が不正: "
+            f"{prepared_width}x{prepared_height}, max_edge={max_edge}"
+        )
+    preparation.update(
+        {
+            "resized": True,
+            "prepared_path": str(destination),
+            "prepared_width": prepared_width,
+            "prepared_height": prepared_height,
+            "prepared_bytes": int(
+                prepared.get("bytes") or destination.stat().st_size
+            ),
+        }
+    )
+    adapter_request = {**request, "image_path": str(destination)}
+    return adapter_request, preparation
+
+
 def image_video_production(state: WorkflowState) -> dict[str, Any]:
     phase = "image_video_production"
     requests = dict(state.get("production_requests", {}))
@@ -729,6 +818,9 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
     issues: list[str] = []
     generation: dict[str, Any] = {}
     output_path = ""
+    input_preparation: dict[str, Any] = {}
+    error_record: dict[str, Any] | None = None
+    error_path: Path | None = None
     guard, budget = _video_budget(state, backend, request)
     if budget is not None and not budget.allowed:
         # 課金上限を超えるため、APIへ送信せずに停止する。
@@ -759,18 +851,59 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
         update.update({"current_cut_id": current, "cut_attempts": attempts})
         return update
     try:
-        # 生成は必ず Adapter 経由で行う。バックエンドごとの分岐はここに無い
-        # （Runway等を足しても、この呼び出しは変わらない）。
+        adapter_request = request
+        if backend == "runway":
+            adapter_request, input_preparation = _prepare_runway_input_image(
+                state,
+                current,
+                attempt,
+                request,
+                output_dir,
+            )
+        # 生成本体は必ず Adapter 経由で行う。上のRunway分岐は
+        # 課金APIへのアップロード前処理だけを担当する。
         adapter = _video_backend(state, backend)
-        result = adapter.generate(to_video_request(request, attempt=attempt))
+        result = adapter.generate(
+            to_video_request(adapter_request, attempt=attempt)
+        )
         output_path = result.output_path
         generation = {
             **result.settings,
             **result.to_record(),
             "output_path": output_path,
+            "input_preparation": input_preparation,
         }
     except Exception as exc:
-        issues.append(f"{type(exc).__name__}: {exc}")
+        issue = f"{type(exc).__name__}: {exc}"
+        issues.append(issue)
+        error_path = _attempt_json_path(
+            state,
+            current,
+            attempt,
+            "error",
+        )
+        error_record = {
+            "phase": phase,
+            "cut_id": current,
+            "attempt": attempt,
+            "backend": backend,
+            "model": str(request.get("model") or ""),
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+            "traceback": traceback.format_exc(),
+            "request": deterministic._sanitized(request),
+            "input_preparation": deterministic._sanitized(
+                input_preparation
+            ),
+        }
+        try:
+            _json_write(error_path, error_record)
+        except OSError as write_exc:
+            issues.append(
+                "ErrorLogWriteError: "
+                f"{type(write_exc).__name__}: {write_exc}"
+            )
 
     elapsed = round(time.monotonic() - started, 3)
     # 実課金を台帳へ積む（見積ではなく実額。次回の上限判定に使う）
@@ -803,6 +936,8 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
         "elapsed_seconds": elapsed,
         "request": request,
         "generation": generation,
+        "error": error_record,
+        "error_path": str(error_path) if error_path else None,
         "approved_for_final": False,
     }
     production_artifacts = dict(
@@ -832,6 +967,8 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
             "request": request,
             "artifact": artifact if not issues else None,
             "issue_class": "pass" if not issues else "runtime_transient",
+            "generation_error": error_record,
+            "error_path": str(error_path) if error_path else None,
         },
         artifacts=[artifact] if not issues else [],
         status="success" if not issues else "error",
@@ -869,6 +1006,12 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
     current = int(current)
     artifact = state.get("production_artifacts", {}).get(str(current))
     request = state.get("production_requests", {}).get(str(current), {})
+    production = (
+        state.get("cut_results", {})
+        .get(str(current), {})
+        .get("production", {})
+    )
+    generation_error = production.get("error") or {}
     attempt = int(
         (artifact or {}).get("attempt")
         or request.get("attempt")
@@ -880,6 +1023,16 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
     issue_class = "pass"
     try:
         if not artifact or not artifact.get("path"):
+            if generation_error:
+                error_type = str(
+                    generation_error.get("exception_type") or "GenerationError"
+                )
+                error_message = str(
+                    generation_error.get("message") or "詳細なし"
+                )
+                raise MediaToolError(
+                    f"動画生成に失敗: {error_type}: {error_message}"
+                )
             raise MediaToolError("生成動画のArtifactがない")
         technical = probe_media(artifact["path"])
         decode_check(artifact["path"])
@@ -994,6 +1147,8 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
         "technical": technical,
         "representative_frames": frames,
         "source_image": request.get("image_path"),
+        "generation_error": generation_error or None,
+        "generation_error_path": production.get("error_path"),
         "visual_evaluation": {
             "status": "not_evaluated",
             "reason": (
@@ -1242,6 +1397,37 @@ def sequence_visual_qa(state: WorkflowState) -> dict[str, Any]:
                 "affected_cut_ids": missing,
             }
         )
+    production_artifacts = dict(state.get("production_artifacts", {}))
+    missing_artifacts: list[int] = []
+    missing_files: list[int] = []
+    for cut_id in sorted(expected):
+        artifact = production_artifacts.get(str(cut_id))
+        if not isinstance(artifact, dict):
+            missing_artifacts.append(cut_id)
+            continue
+        raw_path = str(artifact.get("path") or "")
+        if not raw_path or not Path(raw_path).is_file():
+            missing_files.append(cut_id)
+    if missing_artifacts:
+        issues.append(
+            {
+                "code": "MISSING_PRODUCTION_ARTIFACTS",
+                "description": (
+                    f"生成成果物情報がないカット: {missing_artifacts}"
+                ),
+                "affected_cut_ids": missing_artifacts,
+            }
+        )
+    if missing_files:
+        issues.append(
+            {
+                "code": "MISSING_PRODUCTION_FILES",
+                "description": (
+                    f"生成動画ファイルが存在しないカット: {missing_files}"
+                ),
+                "affected_cut_ids": missing_files,
+            }
+        )
     requested_total = sum(float(cut["seconds"]) for cut in cuts)
     target = float(
         state.get("project", {}).get(
@@ -1283,6 +1469,7 @@ def sequence_visual_qa(state: WorkflowState) -> dict[str, Any]:
         "confidence": 0.95 if not issues else 0.7,
         "sequence_readiness_checks": [
             "全カット承認済み",
+            "全カットの生成成果物とファイルの実在",
             "カット順序",
             "予定尺",
             "素材と演出メタデータの連続性",
@@ -2909,6 +3096,23 @@ def _copy_cut_sources(state: WorkflowState, package: Path) -> list[dict]:
 def provenance_package(state: WorkflowState) -> dict[str, Any]:
     phase = "provenance"
     run_id = str(state.get("run_id") or f"run-{int(time.time())}")
+    raw_source_video = str(state.get("final_output") or "").strip()
+    source_video = Path(raw_source_video)
+    if not raw_source_video or not source_video.is_file():
+        return deterministic._complete(
+            state,
+            phase,
+            summary="最終動画がないため提出Packageを作成不可",
+            data={
+                "final_output": raw_source_video or None,
+                "is_file": False,
+            },
+            status="error",
+            confidence=0.0,
+            blocking_issues=[
+                "final_outputが実在する動画ファイルではない"
+            ],
+        )
     configured = (
         state.get("config", {})
         .get("paths", {})
@@ -2916,17 +3120,6 @@ def provenance_package(state: WorkflowState) -> dict[str, Any]:
     )
     package = deterministic.WORKFLOW_ROOT / configured / run_id
     package.mkdir(parents=True, exist_ok=True)
-    source_video = Path(str(state.get("final_output") or ""))
-    if not source_video.exists():
-        return deterministic._complete(
-            state,
-            phase,
-            summary="最終動画がないため提出Packageを作成不可",
-            data={},
-            status="error",
-            confidence=0.0,
-            blocking_issues=["final_outputの動画が存在しない"],
-        )
     final_video = package / "final_video.mp4"
     if source_video.resolve() != final_video.resolve():
         shutil.copy2(source_video, final_video)
