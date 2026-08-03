@@ -5,6 +5,7 @@ description = "AGEWEC 2026 agentic video pipeline (LangGraph skeleton)"
 requires-python = ">=3.10"
 dependencies = [
     "langgraph>=0.2",
+    "langgraph-checkpoint-sqlite>=3.0.1", # 中断後も同じrun_idから再開するため
     "langchain-openai>=0.1",   # LM Studio(OpenAI互換API)呼び出し用
     "pydantic>=2",
     "pyyaml>=6",

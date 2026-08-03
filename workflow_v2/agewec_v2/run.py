@@ -4,15 +4,20 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shlex
 import uuid
 from pathlib import Path
 from typing import Any
 
 import yaml
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from . import timing
+from .checkpointing import (
+    RunNotFoundError,
+    load_persisted_result,
+    open_sqlite_checkpointer,
+)
 from .graph_safe import build_graph
 from .review_display import (
     changed_field_labels,
@@ -23,6 +28,17 @@ from .review_display import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CHECKPOINT_DB = ROOT / "work" / "checkpoints.sqlite"
+
+
+def _resume_command(run_id: str, checkpoint_db: Path) -> str:
+    command = (
+        "PYTHONPATH=workflow_v2 .venv/bin/python "
+        f"-m agewec_v2.run --resume {shlex.quote(run_id)}"
+    )
+    if checkpoint_db != DEFAULT_CHECKPOINT_DB.resolve():
+        command += f" --checkpoint-db {shlex.quote(str(checkpoint_db))}"
+    return command
 
 
 def _gate_snapshot_path(payload: dict[str, Any]) -> Path | None:
@@ -307,57 +323,98 @@ def main() -> None:
         choices=["manual", "supervised", "autonomous", "custom"],
     )
     parser.add_argument("--config", type=Path)
+    parser.add_argument(
+        "--resume",
+        metavar="RUN_ID",
+        help="保存済みのrun_idから実行を再開する",
+    )
+    parser.add_argument(
+        "--checkpoint-db",
+        type=Path,
+        default=DEFAULT_CHECKPOINT_DB,
+        help="状態保存用SQLiteファイル",
+    )
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    if args.preset:
-        config["autonomy_preset"] = args.preset
-        if args.preset != "custom":
-            config["review_policies"] = {}
+    if args.resume and (args.config is not None or args.preset is not None):
+        parser.error("--resumeでは保存済み設定を使うため、--config/--presetは指定できません")
 
-    project = dict(config.get("project", {}))
-    run_id = f"run-{uuid.uuid4().hex[:10]}"
-    graph = build_graph(checkpointer=MemorySaver())
+    checkpoint_db = args.checkpoint_db
+    if not checkpoint_db.is_absolute():
+        checkpoint_db = ROOT / checkpoint_db
+    checkpoint_db = checkpoint_db.resolve()
+    run_id = args.resume or f"run-{uuid.uuid4().hex[:10]}"
     thread = {"configurable": {"thread_id": run_id}}
-    initial = {
-        "run_id": run_id,
-        "project": project,
-        "config": config,
-        "phase_results": {},
-        "phase_timings": {},
-        "attempts": {},
-        "feedback": {},
-        "review_context": {},
-        "reviews": [],
-        "events": [],
-        "artifacts": [],
-        "production_requests": {},
-        "production_queue": [],
-        "current_cut_id": None,
-        "generated_cut_ids": [],
-        "approved_cut_ids": [],
-        "failed_cut_ids": [],
-        "cut_attempts": {},
-        "cut_results": {},
-        "production_artifacts": {},
-        "cut_qa_results": {},
-        "aborted": False,
-    }
-    result = graph.invoke(initial, thread)
-    while "__interrupt__" in result:
-        payload = result["__interrupt__"][0].value
-        if args.auto and not payload.get("require_human", False):
-            if payload.get("kind") == "execution_limit":
-                print(f"[安全停止] {payload.get('label')} — {payload.get('summary')}")
-                decision = {"action": "abort", "feedback": ""}
+
+    try:
+        with open_sqlite_checkpointer(checkpoint_db) as checkpointer:
+            graph = build_graph(checkpointer=checkpointer)
+            print(f"[状態保存] {checkpoint_db}")
+            if args.resume:
+                try:
+                    result = load_persisted_result(graph, thread, run_id)
+                except RunNotFoundError as exc:
+                    parser.error(str(exc))
+                print(f"[実行再開] run_id: {run_id}")
             else:
-                print(f"[自動承認] {payload.get('label')} — {payload.get('summary')}")
-                decision = {"action": "approve", "feedback": ""}
-        else:
-            if args.auto and payload.get("require_human", False):
-                print("[人間確認必須] --autoでもH3は自動承認しません。")
-            decision = _decision_from_user(payload)
-        result = graph.invoke(Command(resume=decision), thread)
+                config = load_config(args.config)
+                if args.preset:
+                    config["autonomy_preset"] = args.preset
+                    if args.preset != "custom":
+                        config["review_policies"] = {}
+
+                project = dict(config.get("project", {}))
+                initial = {
+                    "run_id": run_id,
+                    "project": project,
+                    "config": config,
+                    "phase_results": {},
+                    "phase_timings": {},
+                    "attempts": {},
+                    "feedback": {},
+                    "review_context": {},
+                    "reviews": [],
+                    "events": [],
+                    "artifacts": [],
+                    "production_requests": {},
+                    "production_queue": [],
+                    "current_cut_id": None,
+                    "generated_cut_ids": [],
+                    "approved_cut_ids": [],
+                    "failed_cut_ids": [],
+                    "cut_attempts": {},
+                    "cut_results": {},
+                    "production_artifacts": {},
+                    "cut_qa_results": {},
+                    "aborted": False,
+                }
+                print(f"[新規実行] run_id: {run_id}", flush=True)
+                result = graph.invoke(initial, thread)
+
+            while "__interrupt__" in result:
+                payload = result["__interrupt__"][0].value
+                if args.auto and not payload.get("require_human", False):
+                    if payload.get("kind") == "execution_limit":
+                        print(
+                            f"[安全停止] {payload.get('label')} — "
+                            f"{payload.get('summary')}"
+                        )
+                        decision = {"action": "abort", "feedback": ""}
+                    else:
+                        print(
+                            f"[自動承認] {payload.get('label')} — "
+                            f"{payload.get('summary')}"
+                        )
+                        decision = {"action": "approve", "feedback": ""}
+                else:
+                    if args.auto and payload.get("require_human", False):
+                        print("[人間確認必須] --autoでもH3は自動承認しません。")
+                    decision = _decision_from_user(payload)
+                result = graph.invoke(Command(resume=decision), thread)
+    except KeyboardInterrupt:
+        print("\n[中断] 状態はSQLiteに保存されています。")
+        print(f"再開コマンド: {_resume_command(run_id, checkpoint_db)}")
+        return
 
     summary = timing.summarize(result)
     if summary["phases"]:

@@ -10,6 +10,7 @@
 - Phase 08でFFmpegによる最終MP4の結合とTechnical QA
 - Phase 09をAI審査または`human_only`で運用
 - H3は`--auto`でも人間の最終承認を必須化可能
+- 実行状態をSQLiteへ保存し、終了・クラッシュ後も同じ`run_id`から再開
 - Phase 10で動画、証跡、HTMLレポート、ハッシュManifestを出力
 
 全体図と実装ファイルは
@@ -74,6 +75,17 @@ PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.comfy_check
 PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.run \
   --config workflow_v2/config_llm.yaml
 ```
+
+実行開始時に表示される`run_id`は控えておく。Ctrl-C、ターミナル終了、例外停止後は
+企画・承認・生成済みカットをSQLiteから復元し、同じrunを再開できる。
+
+```bash
+PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.run \
+  --resume run-xxxxxxxxxx
+```
+
+状態は既定で`workflow_v2/work/checkpoints.sqlite`へ保存される。再開時は保存済みの
+設定を使うため、`--resume`と`--config`/`--preset`は同時指定できない。
 
 実ComfyUIでは、全カットの`asset.local_path`が存在する必要がある。
 

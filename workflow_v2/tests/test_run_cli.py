@@ -11,13 +11,31 @@ from unittest.mock import patch
 from agewec_v2.review_display import review_summary_lines
 from agewec_v2.review import _normalize_decision
 from agewec_v2.run import (
+    DEFAULT_CHECKPOINT_DB,
     _changed_top_level_fields,
     _decision_from_user,
+    _resume_command,
     _write_gate_snapshot,
 )
 
 
 class RunCliReviewDisplayTest(unittest.TestCase):
+    def test_resume_command_includes_non_default_checkpoint_database(self) -> None:
+        default_command = _resume_command(
+            "run-test",
+            DEFAULT_CHECKPOINT_DB.resolve(),
+        )
+        custom_command = _resume_command(
+            "run-test",
+            Path("/tmp/checkpoint db.sqlite"),
+        )
+
+        self.assertNotIn("--checkpoint-db", default_command)
+        self.assertIn(
+            "--checkpoint-db '/tmp/checkpoint db.sqlite'",
+            custom_command,
+        )
+
     def test_gate_snapshot_contains_current_and_previous_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             payload = {

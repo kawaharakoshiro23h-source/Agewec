@@ -177,7 +177,7 @@ if not raw or not source_video.is_file():
 
 ## P0-4. CLIの入力ミスで実行が全消滅する
 
-**対応状況: ⚠️ CLI入力バリデーションは修正済み / 状態の永続化は未対応**
+**対応状況: ✅ 修正済み**
 
 対象カットIDは1以上の整数、目標尺は0より大きい有限数になるまで
 再入力する。`Cut2`・負数・ゼロ・`NaN`・`inf`でプロセスは終了しない。
@@ -199,8 +199,8 @@ decision["target_cut_id"] = int(cut_id)      # バリデーションなし
 # 同様に float(duration) も
 ```
 
-さらに checkpointer が `MemorySaver`（メモリのみ）なので、
-プロセスが落ちると**全状態が失われ、再開できない**。
+旧実装では checkpointer が `MemorySaver`（メモリのみ）だったため、
+プロセスが落ちると**全状態が失われ、再開できなかった**。
 
 2026-08-02〜03 に3回発生（Ctrl-C相当 / provenanceクラッシュ / 入力ミス）。
 
@@ -216,8 +216,18 @@ decision["target_cut_id"] = int(cut_id)      # バリデーションなし
        print("  数字だけを入力してください（例: 2）")
    ```
 
-2. **`MemorySaver` → `SqliteSaver`**（数行）
-   プロセスが落ちても途中から再開でき、承認のやり直しも再課金も不要になる。
+2. **`MemorySaver` → `SqliteSaver`** ✅ 実装済み
+   `work/checkpoints.sqlite`へ状態を保存し、次のコマンドで承認待ちまたは
+   最後に完了したノード境界から再開できる。
+
+   ```bash
+   PYTHONPATH=workflow_v2 .venv/bin/python \
+     -m agewec_v2.run --resume run-xxxxxxxxxx
+   ```
+
+   完了済みrunを指定した場合は保存済みの最終状態だけを表示し、生成APIを
+   再実行しない。なお、外部API呼び出しの最中にOSごと強制終了した場合は、
+   API側の処理完了とローカルcheckpoint保存の間を完全には保証できない。
 
 ### 暫定運用（修正前）
 
@@ -411,10 +421,11 @@ Seedance 2 Text-to-Video は Reference image に対応している。
 | Sequence QAで全カットの成果物ファイル実在を確認 | `test_runtime_safety.py` |
 | CLIのカットID・目標尺を再入力可能にし、不正値での強制終了を防止 | `test_run_cli.py` |
 | 初期themeの下流再注入を止め、承認済みProjectBriefを唯一の企画入力に変更 | `test_llm_integration.py` / `test_runtime_safety.py` |
+| SQLiteへ実行状態を永続化し、同じrun_idから承認待ち・ノード境界を再開 | `test_checkpoint_resume.py` |
 
 ---
 
 ## 推奨対応順（8/7まで）
 
-1. SqliteSaver（中断・再開）
-2. P2系 / リファクタリング … 締切後
+1. P2系のうち、完成映像の評価に直結する改善
+2. 大規模リファクタリング … 締切後
