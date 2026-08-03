@@ -32,6 +32,30 @@ def _result_data(state: WorkflowState, phase: str) -> dict[str, Any]:
     )
 
 
+def _approved_project_brief(state: WorkflowState) -> dict[str, Any]:
+    """下流LLMへ渡す、承認済みの企画契約を返す。
+
+    `source_project`は証跡用の初期入力であり、承認後の指示ではない。
+    保存済みProjectBrief自体は変更せず、LLM入力用のコピーから
+    のみ除外する。
+    """
+    brief = copy.deepcopy(_result_data(state, "executive_producer"))
+    brief.pop("source_project", None)
+    return brief
+
+
+def _approved_project_value(
+    state: WorkflowState,
+    key: str,
+    default: Any,
+) -> Any:
+    """ProjectBriefを優先し、未生成時だけ初期projectへ戻る。"""
+    brief = _result_data(state, "executive_producer")
+    if key in brief:
+        return brief[key]
+    return state.get("project", {}).get(key, default)
+
+
 def _feedback(state: WorkflowState, phase: str) -> str:
     return state.get("feedback", {}).get(phase, "")
 
@@ -209,7 +233,7 @@ def executive_producer(state: WorkflowState) -> dict[str, Any]:
 
 
 def creative_director(state: WorkflowState) -> dict[str, Any]:
-    brief = _result_data(state, "executive_producer")
+    brief = _approved_project_brief(state)
     if not brief:
         return deterministic._complete(
             state,
@@ -246,7 +270,6 @@ def creative_director(state: WorkflowState) -> dict[str, Any]:
         state,
         phase="creative_director",
         upstream={
-            "project": state.get("project", {}),
             "project_brief": brief,
         },
         summary=lambda data: f"コンセプト「{data['title']}」をLLMが策定",
@@ -431,7 +454,7 @@ def _rescale_cut_durations(
 
 
 def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
-    brief = _result_data(state, "executive_producer")
+    brief = _approved_project_brief(state)
     concept = _result_data(state, "creative_director")
     if not brief or not concept:
         return deterministic._complete(
@@ -452,9 +475,7 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
     max_cuts = int(max_cuts_value) if max_cuts_value is not None else None
 
     def transform(data: dict[str, Any]) -> dict[str, Any]:
-        target = float(
-            state.get("project", {}).get("target_duration_seconds", 30)
-        )
+        target = float(brief.get("target_duration_seconds", 30))
         reported_total = float(data["total_seconds"])
         storyboard_config = (
             state.get("config", {}).get("storyboard", {})
@@ -551,7 +572,7 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
             "cuts": cuts,
             "cut_limit": cut_limit,
             "total_seconds": target,
-            "duration_source": "project.target_duration_seconds",
+            "duration_source": "project_brief.target_duration_seconds",
             "duration_adjustment": duration_adjustment,
             "narration_language": narration_language,
             "narration_adjustments": narration_adjustments,
@@ -563,7 +584,6 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
         state,
         phase="writer_storyboard",
         upstream={
-            "project": state.get("project", {}),
             "project_brief": brief,
             "creative_concept": concept,
             "storyboard_constraints": {
@@ -582,7 +602,7 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
 
 
 def _asset_candidates(state: WorkflowState) -> list[dict[str, Any]]:
-    award = state.get("project", {}).get("target_award", "夜景賞")
+    award = _approved_project_value(state, "target_award", "夜景賞")
     target_genre = deterministic.AWARD_GENRES.get(award)
     catalog = deterministic._load_catalog()
     photos = catalog.get("photos", [])
@@ -890,7 +910,7 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
             blocking_issues=["Storyboardが必要"],
         )
     candidates = _asset_candidates(state)
-    award = state.get("project", {}).get("target_award", "夜景賞")
+    award = _approved_project_value(state, "target_award", "夜景賞")
     per_cut = int(
         state.get("config", {}).get("assets", {}).get("shortlist_per_cut", 8)
     )
@@ -1098,7 +1118,7 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
             run = RoleRunner(state.get("config", {})).run(
                 role="asset_curator_rationale",
                 upstream={
-                    "project": state.get("project", {}),
+                    "project_brief": _approved_project_brief(state),
                     "final_selections": rationale_input,
                     "instruction": (
                         "IDs are immutable. Explain only the supplied decisions."
@@ -1319,7 +1339,7 @@ def director(state: WorkflowState) -> dict[str, Any]:
         state,
         phase="director",
         upstream={
-            "project": state.get("project", {}),
+            "project_brief": _approved_project_brief(state),
             "creative_concept": concept,
             "storyboard": storyboard,
             "asset_manifest": assets,
@@ -1383,7 +1403,7 @@ def visual_qa(state: WorkflowState) -> dict[str, Any]:
         state,
         phase="visual_qa",
         upstream={
-            "project": state.get("project", {}),
+            "project_brief": _approved_project_brief(state),
             "storyboard": _result_data(state, "writer_storyboard"),
             "direction_plan": _result_data(state, "director"),
             "production_result": _result_data(
@@ -1450,7 +1470,7 @@ def post_production(state: WorkflowState) -> dict[str, Any]:
         state,
         phase="post_production",
         upstream={
-            "project": state.get("project", {}),
+            "project_brief": _approved_project_brief(state),
             "storyboard": _result_data(state, "writer_storyboard"),
             "visual_qa": _result_data(state, "visual_qa"),
             "media_artifacts": (
@@ -1484,8 +1504,7 @@ def review_board(state: WorkflowState) -> dict[str, Any]:
         state,
         phase="review_board",
         upstream={
-            "project": state.get("project", {}),
-            "project_brief": _result_data(state, "executive_producer"),
+            "project_brief": _approved_project_brief(state),
             "creative_concept": _result_data(state, "creative_director"),
             "storyboard": _result_data(state, "writer_storyboard"),
             "asset_manifest": _result_data(state, "asset_curator"),

@@ -243,9 +243,10 @@ class LLMIntegrationTest(unittest.TestCase):
             (ROOT / "config_llm.yaml").read_text(encoding="utf-8")
         )
         # Keep this fixture independent from the user-facing project brief.
+        stale_theme = "STALE_CONFIG_THEME_MUST_NOT_REACH_DOWNSTREAM"
         config["project"] = {
             "target_award": "夜景賞",
-            "theme": "北九州の夜景を紹介する",
+            "theme": stale_theme,
             "target_duration_seconds": 30,
         }
         config["production"]["backend"] = "mock"
@@ -307,6 +308,27 @@ class LLMIntegrationTest(unittest.TestCase):
             "review_board",
         }
         self.assertEqual(set(FakeChatHandler.roles), expected_roles)
+        executive_upstream = FakeChatHandler.payloads[
+            "executive_producer"
+        ]["approved_upstream_context"]
+        self.assertEqual(
+            executive_upstream["project"]["theme"],
+            stale_theme,
+        )
+        for role in expected_roles - {"executive_producer"}:
+            upstream = FakeChatHandler.payloads[role][
+                "approved_upstream_context"
+            ]
+            self.assertNotIn("project", upstream)
+            self.assertNotIn(
+                stale_theme,
+                json.dumps(upstream, ensure_ascii=False),
+            )
+            if "project_brief" in upstream:
+                self.assertNotIn(
+                    "source_project",
+                    upstream["project_brief"],
+                )
         for role in expected_roles:
             phase = (
                 "asset_curator"

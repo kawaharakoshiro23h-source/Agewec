@@ -297,6 +297,13 @@ Asset Curator / Director 側も同じ絞り込みに対応させる。
 
 ## P1-3. config の定型文が全フェーズへ再注入され、承認を迂回する
 
+**対応状況: ✅ 修正済み**
+
+- 初期`project`を直接受け取るのはExecutive Producerだけ
+- 下流LLMには承認済み`project_brief`のみを渡す
+- Brief内の監査用`source_project`は保存するが、下流LLM用コピーからは除外
+- 尺・対象賞・最終尺QAもProjectBriefの値を優先
+
 ### 症状
 
 Executive Producer に「昼にこだわらなくていい」と修正指示して承認しても、
@@ -403,10 +410,11 @@ Seedance 2 Text-to-Video は Reference image に対応している。
 | Provenanceが空パスやディレクトリを動画としてコピーする問題 | `test_runtime_safety.py` |
 | Sequence QAで全カットの成果物ファイル実在を確認 | `test_runtime_safety.py` |
 | CLIのカットID・目標尺を再入力可能にし、不正値での強制終了を防止 | `test_run_cli.py` |
+| 初期themeの下流再注入を止め、承認済みProjectBriefを唯一の企画入力に変更 | `test_llm_integration.py` / `test_runtime_safety.py` |
 
 ---
 
 ## 推奨対応順（8/7まで）
 
-1. **P1-3**（theme再注入）
-2. SqliteSaver / P2系 / リファクタリング … 締切後
+1. SqliteSaver（中断・再開）
+2. P2系 / リファクタリング … 締切後

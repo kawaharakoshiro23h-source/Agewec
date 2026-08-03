@@ -61,6 +61,18 @@ def _result_data(state: WorkflowState, phase: str) -> dict[str, Any]:
     )
 
 
+def _approved_project_value(
+    state: WorkflowState,
+    key: str,
+    default: Any,
+) -> Any:
+    """承認済みProjectBriefの値を優先する。"""
+    brief = _result_data(state, "executive_producer")
+    if key in brief:
+        return brief[key]
+    return state.get("project", {}).get(key, default)
+
+
 def _json_write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1430,7 +1442,8 @@ def sequence_visual_qa(state: WorkflowState) -> dict[str, Any]:
         )
     requested_total = sum(float(cut["seconds"]) for cut in cuts)
     target = float(
-        state.get("project", {}).get(
+        _approved_project_value(
+            state,
             "target_duration_seconds",
             requested_total,
         )
@@ -1602,7 +1615,8 @@ def post_production(state: WorkflowState) -> dict[str, Any]:
             decode_check(final_path)
             technical = probe_media(final_path)
             expected_duration = float(
-                state.get("project", {}).get(
+                _approved_project_value(
+                    state,
                     "target_duration_seconds",
                     storyboard.get("total_seconds", 0),
                 )
@@ -1632,8 +1646,10 @@ def post_production(state: WorkflowState) -> dict[str, Any]:
             issues.append(f"{type(exc).__name__}: {exc}")
 
     edit_manifest = {
-        "target_duration_seconds": state.get("project", {}).get(
-            "target_duration_seconds"
+        "target_duration_seconds": _approved_project_value(
+            state,
+            "target_duration_seconds",
+            storyboard.get("total_seconds"),
         ),
         "timeline": timeline,
         "video_spec": {

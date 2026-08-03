@@ -22,6 +22,17 @@ def _base_state(directory: str, *, run_id: str = "run-safety") -> dict:
             }
         },
         "phase_results": {
+            "executive_producer": {
+                "data": {
+                    "objective": "承認済み企画",
+                    "target_award": "夜景賞",
+                    "target_duration_seconds": 5.0,
+                    "source_project": {
+                        "theme": "古い初期テーマ",
+                        "target_duration_seconds": 99.0,
+                    },
+                }
+            },
             "writer_storyboard": {
                 "data": {
                     "cuts": [{"id": 1, "seconds": 5.0}],
@@ -93,6 +104,22 @@ class SequenceVisualQASafetyTest(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["data"]["verdict"], "pass")
         self.assertEqual(result["data"]["issues"], [])
+
+    def test_approved_brief_duration_overrides_stale_project_value(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "cut_01.mp4"
+            video.write_bytes(b"video")
+            state = _base_state(directory)
+            state["project"]["target_duration_seconds"] = 99.0
+            state["production_artifacts"] = {
+                "1": {"path": str(video), "kind": "video"}
+            }
+
+            update = sequence_visual_qa(state)
+
+        result = update["phase_results"]["visual_qa"]
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["data"]["verdict"], "pass")
 
 
 class ProvenanceSafetyTest(unittest.TestCase):
