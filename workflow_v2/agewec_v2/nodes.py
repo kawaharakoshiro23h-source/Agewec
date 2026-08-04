@@ -652,7 +652,9 @@ def _comfy_production(
             or shot.get("media_strategy") == "video"
         )
         if not requires_video:
-            source = shot.get("asset", {}).get("local_path")
+            # text_to_video のカットでは asset が None になりうる。
+            # `.get("asset", {})` は値が None のとき None を返すので不可。
+            source = (shot.get("asset") or {}).get("local_path")
             artifacts.append(
                 {
                     "phase": "image_video_production",
@@ -665,7 +667,9 @@ def _comfy_production(
             if not source:
                 issues.append(f"cut {shot['id']}: 静止画素材がローカルにない")
             continue
-        source = shot.get("asset", {}).get("local_path")
+        # text_to_video のカットでは asset が None になりうる。
+        # `.get("asset", {})` は値が None のとき None を返すので不可。
+        source = (shot.get("asset") or {}).get("local_path")
         if not source:
             issues.append(f"cut {shot['id']}: ComfyUI入力画像がない")
             continue

@@ -160,6 +160,69 @@ class BackendRequestContractTest(unittest.TestCase):
         self.assertIsNone(result["data"]["frame_rule"])
         self.assertAlmostEqual(result["data"]["cost_estimate"]["total_usd"], 0.6)
 
+    def test_hailuo_contract_uses_2k_without_inventing_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "source.jpg"
+            image.write_bytes(b"image")
+            state = _base_state(directory, str(image), "runway")
+            state["config"]["production"]["model"] = "hailuo3"
+            state["config"]["runway"]["models"]["hailuo3"] = {
+                "allowed_seconds": list(range(5, 16)),
+                "resolutions": ["2K"],
+                "resolution": "2K",
+                "prompt_image_format": "keyframes",
+                "generation_modes": ["image_to_video"],
+                "supports_seed": False,
+                "supports_negative_prompt": False,
+                "has_native_audio": True,
+                "cost_per_second_usd": 0.15,
+            }
+            with patch.dict(os.environ, {"RUNWAY_API_KEY": "test-key"}):
+                update = runtime.support_video_creator(state)
+
+        result = update["phase_results"]["support_video_creator"]
+        request = update["production_requests"]["1"]
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(request["model"], "hailuo3")
+        self.assertEqual(request["resolution"], "2K")
+        self.assertNotIn("ratio", request)
+        self.assertNotIn("width", request)
+        self.assertNotIn("height", request)
+        self.assertAlmostEqual(
+            result["data"]["cost_estimate"]["total_usd"], 0.75
+        )
+
+    def test_hailuo_text_to_video_is_blocked_at_paid_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = _base_state(directory, "", "runway")
+            state["config"]["production"]["model"] = "hailuo3"
+            state["config"]["runway"]["models"]["hailuo3"] = {
+                "allowed_seconds": list(range(5, 16)),
+                "resolutions": ["2K"],
+                "resolution": "2K",
+                "prompt_image_format": "keyframes",
+                "generation_modes": ["image_to_video"],
+                "supports_seed": False,
+                "supports_negative_prompt": False,
+                "has_native_audio": True,
+                "cost_per_second_usd": 0.15,
+            }
+            shot = state["phase_results"]["director"]["data"]["shots"][0]
+            shot["generation_mode"] = "text_to_video"
+            shot["asset"] = None
+            update = runtime.support_video_creator(state)
+
+        result = update["phase_results"]["support_video_creator"]
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(
+            any(
+                "hailuo3 は現在 text_to_video に未対応" in issue
+                for issue in result["blocking_issues"]
+            ),
+            result["blocking_issues"],
+        )
+        self.assertNotIn("1", update["production_requests"])
+
     def test_comfy_contract_preserves_ltx_profile_and_frame_rule(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "source.jpg"
@@ -239,6 +302,69 @@ class BackendRequestContractTest(unittest.TestCase):
         self.assertEqual(qa["verdict"], "pass")
         self.assertEqual(qa["issues"], [])
 
+    def test_hailuo_qa_records_actual_adaptive_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = {
+                "run_id": "run-hailuo-qa",
+                "current_cut_id": 1,
+                "production_requests": {
+                    "1": {
+                        "cut_id": 1,
+                        "backend": "runway",
+                        "model": "hailuo3",
+                        "actual_seconds": 5.0,
+                        "resolution": "2K",
+                        "image_path": "/tmp/source.jpg",
+                    }
+                },
+                "production_artifacts": {
+                    "1": {
+                        "path": "/tmp/cut.mp4",
+                        "backend": "runway",
+                        "attempt": 1,
+                        "generation": {
+                            "billed_seconds": 5.0,
+                            "resolution": "2K",
+                            "settings": {"resolution": "2K"},
+                        },
+                    }
+                },
+                "cut_results": {},
+                "cut_qa_results": {},
+                "attempts": {},
+                "feedback": {},
+                "review_context": {},
+                "events": [],
+                "artifacts": [],
+                "config": {
+                    "paths": {"work_dir": directory},
+                    "qa": {
+                        "duration_tolerance_seconds": 0.25,
+                        "representative_frame_count": 1,
+                    },
+                },
+            }
+            technical = {
+                "duration_seconds": 5.0,
+                "width": 2048,
+                "height": 1365,
+            }
+            with patch.object(
+                runtime, "probe_media", return_value=technical
+            ), patch.object(runtime, "decode_check"), patch.object(
+                runtime, "extract_representative_frames", return_value=[]
+            ), patch.object(
+                runtime.review_page,
+                "build_review_page",
+                return_value=Path(directory) / "review.html",
+            ):
+                update = runtime.cut_visual_qa(state)
+
+        qa = update["phase_results"]["cut_visual_qa"]["data"]
+        self.assertEqual(qa["verdict"], "pass")
+        self.assertEqual(qa["technical"]["width"], 2048)
+        self.assertEqual(qa["technical"]["height"], 1365)
+
     def test_large_runway_image_is_resized_without_changing_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "large-source.jpg"
@@ -305,6 +431,28 @@ class BackendRequestContractTest(unittest.TestCase):
                 "success",
             )
             self.assertEqual(adapter.request.image_path, str(source))
+
+    def test_runway_text_to_video_skips_image_preparation(self) -> None:
+        """T2Vは参照画像がないため、Runway画像前処理を呼んではならない。"""
+        with tempfile.TemporaryDirectory() as directory:
+            state = _production_state(directory, "", "runway")
+            state["production_requests"]["1"]["generation_mode"] = (
+                "text_to_video"
+            )
+            adapter = _CapturingAdapter(Path(directory) / "generated.mp4")
+            with patch.object(
+                runtime, "_prepare_runway_input_image"
+            ) as prepare, patch.object(
+                runtime, "_video_backend", return_value=adapter
+            ):
+                update = runtime.image_video_production(state)
+
+            prepare.assert_not_called()
+            self.assertEqual(
+                update["phase_results"]["image_video_production"]["status"],
+                "success",
+            )
+            self.assertEqual(adapter.request.image_path, "")
 
     def test_generation_failure_is_persisted_and_reaches_cut_qa(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

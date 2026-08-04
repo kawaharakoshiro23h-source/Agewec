@@ -42,6 +42,17 @@ MODELS = {
         "has_native_audio": True,
         "cost_per_second_usd": 0.36,
     },
+    "hailuo3": {
+        "allowed_seconds": list(range(5, 16)),
+        "resolutions": ["2K"],
+        "resolution": "2K",
+        "prompt_image_format": "keyframes",
+        "generation_modes": ["image_to_video"],
+        "supports_seed": False,
+        "supports_negative_prompt": False,
+        "has_native_audio": True,
+        "cost_per_second_usd": 0.15,
+    },
 }
 
 
@@ -50,6 +61,7 @@ class FakeRunwayHandler(BaseHTTPRequestHandler):
 
     payloads: list[dict] = []
     upload_preparations: list[dict] = []
+    endpoints: list[str] = []          # 生成方式ごとにURLが分かれる
     signed_uploads = 0
     poll_count = 0
     fail_task = False
@@ -92,7 +104,8 @@ class FakeRunwayHandler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
-        if self.path == "/v1/image_to_video":
+        if self.path in ("/v1/image_to_video", "/v1/text_to_video"):
+            FakeRunwayHandler.endpoints.append(self.path)
             FakeRunwayHandler.payloads.append(json.loads(raw))
             self._json(200, {"id": "task-123"})
             return
@@ -152,6 +165,7 @@ class RunwayBackendTest(unittest.TestCase):
     def setUp(self) -> None:
         FakeRunwayHandler.payloads = []
         FakeRunwayHandler.upload_preparations = []
+        FakeRunwayHandler.endpoints = []
         FakeRunwayHandler.signed_uploads = 0
         FakeRunwayHandler.poll_count = 0
         FakeRunwayHandler.fail_task = False
@@ -275,6 +289,30 @@ class RunwayBackendTest(unittest.TestCase):
         self.assertNotIn("audio", payload)
         self.assertEqual(payload["duration"], 5)
 
+    def test_hailuo_uses_2k_keyframe_contract(self) -> None:
+        """Runway DevのHailuo 3.0コード例と同じ送信形にする。"""
+        result = self._backend("hailuo3").generate(
+            self._request(seconds=5.0)
+        )
+        payload = FakeRunwayHandler.payloads[0]
+        self.assertEqual(FakeRunwayHandler.endpoints, ["/v1/image_to_video"])
+        self.assertEqual(payload["model"], "hailuo3")
+        self.assertEqual(payload["resolution"], "2K")
+        self.assertNotIn("ratio", payload)
+        self.assertNotIn("seed", payload)
+        self.assertEqual(
+            payload["promptImage"],
+            [
+                {
+                    "uri": "runway://ephemeral/source.jpg",
+                    "position": "first",
+                }
+            ],
+        )
+        self.assertEqual(result.billed_seconds, 5.0)
+        self.assertAlmostEqual(result.cost_usd, 0.75)
+        self.assertIs(result.has_native_audio, True)
+
     def test_model_switch_changes_capabilities(self) -> None:
         veo = self._backend("veo3.1_fast").capabilities()
         gen = self._backend("gen4.5").capabilities()
@@ -295,6 +333,59 @@ class RunwayBackendTest(unittest.TestCase):
     def test_unknown_model_raises(self) -> None:
         with self.assertRaises(RunwayError):
             self._backend("does-not-exist").capabilities()
+
+    # -------------------------------------------- generation_mode の分岐
+    def test_image_to_video_uses_the_image_endpoint(self) -> None:
+        self._backend("gen4.5").generate(self._request(seconds=5.0))
+        self.assertEqual(FakeRunwayHandler.endpoints, ["/v1/image_to_video"])
+        self.assertEqual(FakeRunwayHandler.signed_uploads, 1)
+        self.assertIn("promptImage", FakeRunwayHandler.payloads[0])
+
+    def test_text_to_video_skips_upload_and_sends_no_image(self) -> None:
+        """t2vでは画像アップロードを一切行わない（無駄な往復と誤送信を防ぐ）。"""
+        result = self._backend("gen4.5").generate(
+            self._request(
+                seconds=5.0, image_path="", generation_mode="text_to_video"
+            )
+        )
+        self.assertEqual(FakeRunwayHandler.endpoints, ["/v1/text_to_video"])
+        self.assertEqual(FakeRunwayHandler.signed_uploads, 0)
+        self.assertEqual(FakeRunwayHandler.upload_preparations, [])
+        payload = FakeRunwayHandler.payloads[0]
+        self.assertNotIn("promptImage", payload)
+        self.assertEqual(payload["promptText"], "cinematic night view")
+        self.assertEqual(result.settings["generation_mode"], "text_to_video")
+
+    def test_text_to_video_with_an_image_raises_before_sending(self) -> None:
+        with self.assertRaises(RunwayError):
+            self._backend("gen4.5").generate(
+                self._request(generation_mode="text_to_video")
+            )
+        self.assertEqual(FakeRunwayHandler.endpoints, [])
+
+    def test_hailuo_rejects_unverified_text_to_video_before_sending(self) -> None:
+        with self.assertRaisesRegex(RunwayError, "現在 text_to_video に未対応"):
+            self._backend("hailuo3").generate(
+                self._request(
+                    seconds=5.0,
+                    image_path="",
+                    generation_mode="text_to_video",
+                )
+            )
+        self.assertEqual(FakeRunwayHandler.endpoints, [])
+        self.assertEqual(FakeRunwayHandler.upload_preparations, [])
+
+    def test_image_to_video_without_an_image_raises(self) -> None:
+        with self.assertRaises(RunwayError):
+            self._backend("gen4.5").generate(self._request(image_path=""))
+        self.assertEqual(FakeRunwayHandler.endpoints, [])
+
+    def test_unknown_generation_mode_raises(self) -> None:
+        with self.assertRaises(RunwayError):
+            self._backend("gen4.5").generate(
+                self._request(generation_mode="video_to_video")
+            )
+        self.assertEqual(FakeRunwayHandler.endpoints, [])
 
     def test_missing_api_key_raises(self) -> None:
         with self.assertRaises(RunwayError):

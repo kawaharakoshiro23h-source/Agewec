@@ -226,6 +226,14 @@ def _support_video(data: dict[str, Any]) -> list[str]:
     if cost.get("total_usd") is not None:
         lines.append(f"  概算費用: US${float(cost['total_usd']):.2f}")
     for request in requests:
+        mode = str(request.get("generation_mode") or "image_to_video")
+        # 承認前に「写真を動かすのか、文章だけから作るのか」が分かるようにする。
+        # 人間がここで方式の誤りを止められることが、この画面の目的。
+        source_line = (
+            "    生成方式: 文章のみから生成（Text to Video / 元画像なし）"
+            if mode == "text_to_video"
+            else f"    元画像: {_basename(request.get('image_path'))}"
+        )
         lines.extend(
             [
                 "",
@@ -233,7 +241,12 @@ def _support_video(data: dict[str, Any]) -> list[str]:
                     f"  Cut {request.get('cut_id')}: "
                     f"{_text(request.get('requested_seconds'))}秒"
                 ),
-                f"    元画像: {_basename(request.get('image_path'))}",
+                source_line,
+                *(
+                    [f"    生成解像度: {_text(request.get('resolution'))}"]
+                    if request.get("resolution")
+                    else []
+                ),
                 f"    カメラ: {_text(request.get('camera_motion'))}",
                 f"    生成指示: {_text(request.get('positive_prompt'))}",
             ]
@@ -279,7 +292,11 @@ def _cut_visual_qa(data: dict[str, Any]) -> list[str]:
         f"  判定: {verdict_label}",
         f"  映像確認: {'実施済み' if artifact else '未実施'}",
         f"  理由: {_qa_reason(data)}",
-        f"  元画像: {_basename(data.get('source_image'))}",
+        (
+            "  生成方式: 文章のみから生成（Text to Video / 元画像なし）"
+            if str(data.get("generation_mode") or "") == "text_to_video"
+            else f"  元画像: {_basename(data.get('source_image'))}"
+        ),
     ]
     if artifact:
         lines.append(f"  生成動画: {artifact}")

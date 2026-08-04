@@ -7,7 +7,7 @@ Runway Dev API は単一の統合で複数モデルを扱えるため、Adapter 
 
     production:
       backend: runway
-      model: veo3.1_fast     # gen4.5 / seedance2 に変えるだけ
+      model: veo3.1_fast     # gen4.5 / seedance2 / hailuo3 に変えるだけ
 
 処理の流れ（他のAdapterと同じ `generate(VideoRequest)` を実装する）:
 
@@ -32,6 +32,12 @@ from .base import Capabilities, VideoRequest, VideoResult
 # タスクの終了状態（Runwayの表記ゆれに備えて広めに持つ）
 _SUCCESS = {"SUCCEEDED", "SUCCESS", "COMPLETED"}
 _FAILURE = {"FAILED", "ERROR", "CANCELLED", "CANCELED"}
+
+# 生成方式ごとのエンドポイント。Runwayは方式でURLが分かれる。
+_GENERATION_ENDPOINTS = {
+    "image_to_video": "v1/image_to_video",
+    "text_to_video": "v1/text_to_video",
+}
 
 
 class RunwayError(RuntimeError):
@@ -146,9 +152,9 @@ class RunwayBackend:
             )
         return str(runway_uri)
 
-    def _create_task(self, payload: dict[str, Any]) -> str:
+    def _create_task(self, payload: dict[str, Any], endpoint: str) -> str:
         response = self._client.post(
-            f"{self.base_url}/v1/image_to_video",
+            f"{self.base_url}/{endpoint.lstrip('/')}",
             headers={**self._headers(), "Content-Type": "application/json"},
             json=payload,
         )
@@ -225,14 +231,58 @@ class RunwayBackend:
         duration = caps.resolve_seconds(float(request.seconds))
         spec = self.models.get(caps.model, {})
 
-        image_url = self._upload_image(Path(request.image_path))
+        # 生成方式はカット単位で Director が決め、ProductionRequest 経由で
+        # ここへ届く。画像の有無から推測しない（素材選定の失敗を
+        # text_to_video として静かに握り潰さないため）。
+        mode = str(request.extra.get("generation_mode") or "image_to_video")
+        if mode not in _GENERATION_ENDPOINTS:
+            raise RunwayError(
+                f"未知の generation_mode: {mode}"
+                f"（有効: {', '.join(sorted(_GENERATION_ENDPOINTS))}）"
+            )
+        supported_modes = tuple(
+            str(value)
+            for value in spec.get(
+                "generation_modes", tuple(_GENERATION_ENDPOINTS)
+            )
+        )
+        if mode not in supported_modes:
+            raise RunwayError(
+                f"Runway {caps.model} は現在 {mode} に未対応です"
+                f"（対応: {', '.join(supported_modes)}）"
+            )
+        endpoint = _GENERATION_ENDPOINTS[mode]
+
         payload: dict[str, Any] = {
             "model": caps.model,
-            "promptImage": image_url,
             "promptText": request.positive_prompt,
             "duration": int(round(duration)),
-            "ratio": str(spec.get("ratio") or self.ratio),
         }
+        resolution = str(spec.get("resolution") or "")
+        if resolution:
+            # Hailuo 3.0など、幅:高さではなく品質トークンを受け取るモデル。
+            payload["resolution"] = resolution
+        else:
+            payload["ratio"] = str(spec.get("ratio") or self.ratio)
+        if mode == "image_to_video":
+            if not request.image_path:
+                raise RunwayError(
+                    f"cut {request.cut_id}: image_to_video に画像がありません"
+                )
+            uploaded = self._upload_image(Path(request.image_path))
+            if str(spec.get("prompt_image_format") or "uri") == "keyframes":
+                # Hailuo 3.0のRunway契約は開始・終了フレームの配列形式。
+                # 現在のパイプラインは開始フレーム1枚だけを渡す。
+                payload["promptImage"] = [
+                    {"uri": uploaded, "position": "first"}
+                ]
+            else:
+                payload["promptImage"] = uploaded
+        elif request.image_path:
+            raise RunwayError(
+                f"cut {request.cut_id}: text_to_video に画像は渡せません"
+                f"（{request.image_path}）"
+            )
         if caps.supports_seed and request.seed is not None:
             payload["seed"] = int(request.seed)
         if caps.supports_negative_prompt and request.negative_prompt:
@@ -241,7 +291,7 @@ class RunwayBackend:
             # 可能なモデルでは音声を生成させない（音は最後に一本だけ付ける）
             payload["audio"] = bool(spec["request_audio"])
 
-        task_id = self._create_task(payload)
+        task_id = self._create_task(payload, endpoint)
         body = self._wait(task_id)
         destination = Path(
             str(self._output_path_for(request.cut_id, request.attempt))
@@ -262,7 +312,17 @@ class RunwayBackend:
             has_native_audio=(
                 caps.has_native_audio and payload.get("audio", True) is not False
             ),
-            settings={**payload, "promptImage": "<uploaded>"},
+            settings={
+                **payload,
+                "generation_mode": mode,
+                "endpoint": endpoint,
+                # アップロード先URLは毎回変わり証跡として意味がないため伏せる
+                **(
+                    {"promptImage": "<uploaded>"}
+                    if "promptImage" in payload
+                    else {}
+                ),
+            },
         )
 
 

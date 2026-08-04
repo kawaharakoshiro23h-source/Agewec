@@ -1,7 +1,7 @@
 project:
   target_award: 夜景賞、観光賞
   theme: 北九州の夕暮れ(夜の始まり)から荘厳な夜景へ移り変わる魅力を、国内外の旅行者へ伝える観光プロモーション動画
-  target_duration_seconds: 30
+  target_duration_seconds: 2
 
 autonomy_preset: manual
 
@@ -98,7 +98,7 @@ production:
   backend: runway
   model: gen4.5
   # comfy / runway
-  # model : gen4.5 / veo3.1_fast / seedance2
+  # model : gen4.5 / veo3.1_fast / seedance2 / hailuo3
   # 課金を伴うバックエンド（クラウドAPI）用の上限。
   # 送信前に「実課金累計 + 次回見積 <= limit_usd」を必ず検査する。
   # ローカル(comfy/mock)は無料なのでこの設定に関わらず素通しする。
@@ -206,6 +206,18 @@ runway:
       has_native_audio: true
       # audioフィールドの受理可否が未確認なので送らない。出力音声はPhase 08で除去。
       cost_per_second_usd: 0.36    # 480p/720p価格
+    hailuo3:
+      # Runway Dev公式Playground: 2K、5〜15秒、15 credits/秒。
+      allowed_seconds: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      resolutions: ["2K"]
+      resolution: "2K"
+      prompt_image_format: keyframes
+      # Runway経由で確認済みなのはI2V。未確認のT2Vへ誤送信しない。
+      generation_modes: [image_to_video]
+      supports_seed: false
+      supports_negative_prompt: false
+      has_native_audio: true
+      cost_per_second_usd: 0.15
 
 paths:
   work_dir: work

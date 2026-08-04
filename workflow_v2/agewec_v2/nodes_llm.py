@@ -1268,22 +1268,32 @@ def director(state: WorkflowState) -> dict[str, Any]:
         invalid = []
         for direction in data["shots"]:
             cut_id = int(direction["cut_id"])
-            raw_asset_id = direction["asset_id"]
-            asset_id = _canonical_asset_id(raw_asset_id)
+            mode = str(
+                direction.get("generation_mode") or "image_to_video"
+            )
             if cut_id not in cut_map:
                 invalid.append(f"unknown cut={cut_id}")
                 continue
             if target_cut_id is not None and cut_id != target_cut_id:
                 continue
-            assignment = assignment_map[cut_id]
-            choices = [assignment["primary"], *assignment["alternatives"]]
-            asset_map = {item["asset_id"]: item for item in choices}
-            if asset_id not in asset_map:
-                invalid.append(
-                    f"cut={cut_id}, asset={raw_asset_id} "
-                    f"(normalized={asset_id}) is not assigned to cut"
-                )
-                continue
+            # text_to_video は参照写真を使わないため、素材の割当検証を行わない。
+            # 画像が無いことを理由に自動でこのモードへ落とすことはしない
+            # （Schema側で asset_id との整合を検証済み）。
+            if mode == "text_to_video":
+                asset = None
+            else:
+                raw_asset_id = direction["asset_id"]
+                asset_id = _canonical_asset_id(raw_asset_id)
+                assignment = assignment_map[cut_id]
+                choices = [assignment["primary"], *assignment["alternatives"]]
+                asset_map = {item["asset_id"]: item for item in choices}
+                if asset_id not in asset_map:
+                    invalid.append(
+                        f"cut={cut_id}, asset={raw_asset_id} "
+                        f"(normalized={asset_id}) is not assigned to cut"
+                    )
+                    continue
+                asset = asset_map[asset_id]
             if (
                 direction.get("deviation_reason")
                 and not direction["deviation_reason"].strip()
@@ -1291,7 +1301,8 @@ def director(state: WorkflowState) -> dict[str, Any]:
                 direction["deviation_reason"] = None
             new_shots[cut_id] = {
                 **cut_map[cut_id],
-                "asset": asset_map[asset_id],
+                "generation_mode": mode,
+                "asset": asset,
                 "positive_prompt": direction["positive_prompt"],
                 "negative_prompt": direction["negative_prompt"],
                 "camera_motion": direction["camera_motion"],

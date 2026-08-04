@@ -161,6 +161,18 @@ runway:
       has_native_audio: true
       # audioフィールドの受理可否が未確認なので送らない。出力音声はPhase 08で除去。
       cost_per_second_usd: 0.36    # 480p/720p価格
+    hailuo3:
+      # Runway Dev公式Playground: 2K、5〜15秒、15 credits/秒。
+      allowed_seconds: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      resolutions: ["2K"]
+      resolution: "2K"
+      prompt_image_format: keyframes
+      # Runway経由で確認済みなのはI2V。未確認のT2Vへ誤送信しない。
+      generation_modes: [image_to_video]
+      supports_seed: false
+      supports_negative_prompt: false
+      has_native_audio: true
+      cost_per_second_usd: 0.15
 
 paths:
   work_dir: work

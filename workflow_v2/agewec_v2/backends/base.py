@@ -30,6 +30,7 @@ class VideoRequest:
     """
 
     cut_id: int
+    # text_to_video のカットでは空文字。参照画像なしで生成する。
     image_path: str
     positive_prompt: str
     negative_prompt: str = ""

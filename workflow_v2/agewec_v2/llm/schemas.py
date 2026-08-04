@@ -121,8 +121,20 @@ class AssetRationale(BaseModel):
 
 
 class DirectionShot(BaseModel):
+    """1カット分の演出指示。
+
+    `generation_mode` は「実在写真を動かす」のか「文章だけから作る」のかを
+    カット単位で明示する。既定は image_to_video で、公式素材を使う従来の
+    振る舞いを保つ。自動フォールバックはしない（画像が無いから t2v、
+    という暗黙の切り替えは、素材選定の失敗を静かに隠すため）。
+    """
+
     cut_id: int = Field(gt=0)
-    asset_id: str
+    generation_mode: Literal["image_to_video", "text_to_video"] = (
+        "image_to_video"
+    )
+    # text_to_video のカットには参照写真が無いため asset_id を持たない
+    asset_id: str | None = None
     positive_prompt: str
     negative_prompt: str = ""
     camera_motion: str
@@ -130,6 +142,18 @@ class DirectionShot(BaseModel):
     rationale: str
     camera_intent_alignment: str
     deviation_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_mode_and_asset(self) -> "DirectionShot":
+        if self.generation_mode == "image_to_video" and not self.asset_id:
+            raise ValueError(
+                f"cut {self.cut_id}: image_to_video には asset_id が必要です"
+            )
+        if self.generation_mode == "text_to_video" and self.asset_id:
+            raise ValueError(
+                f"cut {self.cut_id}: text_to_video に asset_id は指定できません"
+            )
+        return self
 
 
 class DirectionPlan(BaseModel):

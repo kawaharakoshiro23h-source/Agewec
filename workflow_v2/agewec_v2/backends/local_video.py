@@ -144,7 +144,15 @@ def to_video_request(
         fps=int(raw.get("fps", 24)),
         seed=raw.get("seed"),
         attempt=attempt,
-        extra={"raw": raw, "model": raw.get("model")},
+        extra={
+            "raw": raw,
+            "model": raw.get("model"),
+            # 生成方式は Director がカット単位で決めた値をそのまま運ぶ。
+            # 未指定は従来どおり image_to_video（既存runとの互換）。
+            "generation_mode": (
+                raw.get("generation_mode") or "image_to_video"
+            ),
+        },
     )
 
 

@@ -131,10 +131,17 @@ def _ratio_dimensions(ratio: str) -> tuple[int, int]:
     return width, height
 
 
+# カット単位で選べる生成方式。Director が決め、Phase 05.5 で検証する。
+#   image_to_video … 公式写真を動かす（既定。provenance が最も強い）
+#   text_to_video  … 参照写真なしで文章から生成する
+_GENERATION_MODES = ("image_to_video", "text_to_video")
+
+
 def _runway_request_parameters(
     config: dict[str, Any],
     production: dict[str, Any],
     requested_seconds: float,
+    generation_mode: str = "image_to_video",
 ) -> dict[str, Any]:
     """Resolve the exact model-native values that Runway will receive.
 
@@ -150,6 +157,15 @@ def _runway_request_parameters(
     if not model or not spec:
         raise ValueError(
             f"Runwayモデル {model or '(未設定)'} が config.runway.models にありません"
+        )
+    supported_modes = tuple(
+        str(value)
+        for value in spec.get("generation_modes", _GENERATION_MODES)
+    )
+    if generation_mode not in supported_modes:
+        raise ValueError(
+            f"Runway {model} は現在 {generation_mode} に未対応です"
+            f"（対応: {', '.join(supported_modes)}）"
         )
     caps = Capabilities(
         model=model,
@@ -167,6 +183,23 @@ def _runway_request_parameters(
         minimum_cost_usd=float(spec.get("minimum_cost_usd", 0.0)),
     )
     effective_seconds = caps.resolve_seconds(requested_seconds)
+    common = {
+        "model": model,
+        "requested_seconds": requested_seconds,
+        "actual_seconds": effective_seconds,
+        "effective_seconds": effective_seconds,
+    }
+    resolution = str(spec.get("resolution") or "")
+    if resolution:
+        if caps.resolutions and resolution not in caps.resolutions:
+            raise ValueError(
+                f"Runway {model}: resolution={resolution} は許容値 "
+                f"{caps.resolutions} にありません"
+            )
+        # Hailuo 3.0の2Kは入力画像の縦横比に追従するため、ここで架空の
+        # width/heightへ変換しない。実寸は生成後にffprobeで記録する。
+        return {**common, "resolution": resolution}
+
     ratio = str(spec.get("ratio") or runway.get("ratio") or "")
     if caps.resolutions and ratio not in caps.resolutions:
         raise ValueError(
@@ -174,10 +207,7 @@ def _runway_request_parameters(
         )
     width, height = _ratio_dimensions(ratio)
     return {
-        "model": model,
-        "requested_seconds": requested_seconds,
-        "actual_seconds": effective_seconds,
-        "effective_seconds": effective_seconds,
+        **common,
         "ratio": ratio,
         "width": width,
         "height": height,
@@ -230,8 +260,24 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         if target_cut_id is not None and cut_id != target_cut_id:
             continue
         seconds = float(shot["seconds"])
-        image_path = str(shot.get("asset", {}).get("local_path") or "")
-        if backend != "mock" and (
+        generation_mode = str(
+            shot.get("generation_mode") or "image_to_video"
+        )
+        image_path = str((shot.get("asset") or {}).get("local_path") or "")
+        # 生成方式ごとに必要な入力が異なる。方式と入力の不一致は、
+        # 課金前のここで止める（画像が無いから text_to_video、という
+        # 暗黙のフォールバックはしない）。
+        if generation_mode not in _GENERATION_MODES:
+            blocking.append(
+                f"cut {cut_id}: 未知の generation_mode: {generation_mode}"
+            )
+        elif generation_mode == "text_to_video":
+            if image_path:
+                blocking.append(
+                    f"cut {cut_id}: text_to_video に画像は指定できません: "
+                    f"{image_path}"
+                )
+        elif backend != "mock" and (
             not image_path or not Path(image_path).exists()
         ):
             blocking.append(
@@ -241,6 +287,7 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         common_request = {
             "cut_id": cut_id,
             "backend": backend,
+            "generation_mode": generation_mode,
             "media_requirement": shot.get("media_requirement"),
             "image_path": image_path,
             "positive_prompt": shot["positive_prompt"],
@@ -256,7 +303,7 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         if backend == "runway":
             try:
                 backend_parameters = _runway_request_parameters(
-                    config, production, seconds
+                    config, production, seconds, generation_mode
                 )
             except (UnsupportedDurationError, ValueError) as exc:
                 blocking.append(f"cut {cut_id}: {exc}")
@@ -556,6 +603,7 @@ def _technical_request_signature(request: dict[str, Any]) -> tuple[Any, ...]:
         request.get("requested_seconds"),
         request.get("actual_seconds"),
         request.get("ratio"),
+        request.get("resolution"),
         request.get("width"),
         request.get("height"),
         request.get("frames"),
@@ -864,7 +912,11 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
         return update
     try:
         adapter_request = request
-        if backend == "runway":
+        if (
+            backend == "runway"
+            and str(request.get("generation_mode") or "image_to_video")
+            == "image_to_video"
+        ):
             adapter_request, input_preparation = _prepare_runway_input_image(
                 state,
                 current,
@@ -1067,7 +1119,25 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
                 or request.get("ratio")
                 or ""
             )
-            expected_width, expected_height = _ratio_dimensions(expected_ratio)
+            expected_resolution = str(
+                generation.get("resolution")
+                or generation_settings.get("resolution")
+                or request.get("resolution")
+                or ""
+            )
+            if expected_ratio:
+                expected_width, expected_height = _ratio_dimensions(
+                    expected_ratio
+                )
+            elif expected_resolution:
+                # "2K"は入力画像の縦横比で実寸が変わる。生成物が正常に
+                # decodeできることは上で確認済みなので、架空の寸法との
+                # 完全一致では判定しない。実寸はtechnicalへ記録される。
+                expected_width = expected_height = 0
+            else:
+                raise ValueError(
+                    "Runway生成結果にratioまたはresolutionがありません"
+                )
         else:
             expected = float(request.get("actual_seconds") or 0)
             expected_width = int(request.get("width", 0))
@@ -1091,7 +1161,7 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
                     "evidence": [artifact["path"]],
                 }
             )
-        if (
+        if expected_width and expected_height and (
             technical["width"] != expected_width
             or technical["height"] != expected_height
         ):
@@ -1159,6 +1229,8 @@ def cut_visual_qa(state: WorkflowState) -> dict[str, Any]:
         "technical": technical,
         "representative_frames": frames,
         "source_image": request.get("image_path"),
+        # 元画像が無いのが正常なのか異常なのかを、QA結果だけで判断できるようにする
+        "generation_mode": request.get("generation_mode") or "image_to_video",
         "generation_error": generation_error or None,
         "generation_error_path": production.get("error_path"),
         "visual_evaluation": {
@@ -2102,9 +2174,14 @@ def _phase_actual_items(
     if phase == "director":
         shots = [
             (
-                f"Cut {shot.get('id')}: asset="
-                f"{shot.get('asset', {}).get('asset_id')} / "
-                f"camera={shot.get('camera_motion')} / "
+                f"Cut {shot.get('id')}: "
+                + (
+                    "mode=text_to_video（元画像なし）"
+                    if str(shot.get("generation_mode") or "")
+                    == "text_to_video"
+                    else f"asset={(shot.get('asset') or {}).get('asset_id')}"
+                )
+                + f" / camera={shot.get('camera_motion')} / "
                 f"prompt={_compact_text(shot.get('positive_prompt'), 260)} / "
                 f"根拠={shot.get('rationale', '')}"
             )
@@ -2517,9 +2594,13 @@ def _request_summary(item: dict[str, Any]) -> str:
     表示されるため、契約ごとに項目を選ぶ。
     """
     parts: list[str] = []
+    if str(item.get("generation_mode") or "") == "text_to_video":
+        parts.append("t2v")
     width, height = item.get("width"), item.get("height")
     if width and height:
         parts.append(f"{width}x{height}")
+    elif item.get("resolution"):
+        parts.append(str(item["resolution"]))
 
     if str(item.get("request_contract", "")) == "runway_model_native":
         if item.get("model"):
@@ -2638,22 +2719,46 @@ def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
             f"{html.escape(str(cut.get('time_of_day', '')))}</span></div>"
         )
 
+        # text_to_video のカットには元になった写真が存在しない。
+        # 「素材が抜けている」ではなく「文章から作った」と読めるようにする。
+        is_text_to_video = (
+            str(shot.get("generation_mode") or "image_to_video")
+            == "text_to_video"
+        )
+        no_source_note = (
+            "<span style='color:#8b95a1;font-size:12px;'>"
+            + ("完全生成映像（元画像なし）" if is_text_to_video else "元画像なし")
+            + "</span>"
+        )
+
         if phase == "director":
             # 選んだ写真と、その写真に与える指示を並べる
             media = (
                 f"<img src='{html.escape(source_rel)}' "
                 "style='width:100%;border-radius:8px;display:block;'>"
                 if source_rel
-                else "<span style='color:#8b95a1;font-size:12px;'>元画像なし</span>"
+                else no_source_note
+            )
+            asset_line = (
+                "<div style='font-size:12px;'>"
+                "文章のみから生成（Text to Video）</div>"
+                if is_text_to_video
+                else (
+                    "<div style='font-size:12px;'>"
+                    f"{html.escape(str(asset.get('title', '')))}"
+                    f" <code>{html.escape(str(asset.get('asset_id', '')))}</code>"
+                    "</div>"
+                )
             )
             cards.append(
                 f"<div style='{box}'>{head}"
                 "<div style='display:grid;grid-template-columns:220px minmax(0,1fr);"
                 "gap:14px;margin-top:10px;'>"
                 f"<div>{media}"
-                f"<p style='{label}'>使用素材</p>"
-                f"<div style='font-size:12px;'>{html.escape(str(asset.get('title', '')))}"
-                f" <code>{html.escape(str(asset.get('asset_id', '')))}</code></div>"
+                f"<p style='{label}'>"
+                + ("生成方式" if is_text_to_video else "使用素材")
+                + "</p>"
+                f"{asset_line}"
                 "</div><div>"
                 f"<p style='{label}'>カメラワーク</p>"
                 f"<div style='font-size:13px;'>"
@@ -2675,7 +2780,7 @@ def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
                 f"<img src='{html.escape(source_rel)}' "
                 "style='width:100%;border-radius:8px;display:block;'>"
                 if source_rel
-                else "<span style='color:#8b95a1;font-size:12px;'>元画像なし</span>"
+                else no_source_note
             )
             right = (
                 f"<video src='{html.escape(clip_rel)}' controls "
@@ -2697,7 +2802,9 @@ def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
                 f"<div style='{box}'>{head}"
                 "<div style='display:grid;grid-template-columns:1fr 1fr;"
                 "gap:12px;margin-top:10px;'>"
-                f"<div><p style='{label}'>元画像</p>{left}</div>"
+                f"<div><p style='{label}'>"
+                + ("入力（なし）" if is_text_to_video else "元画像")
+                + f"</p>{left}</div>"
                 f"<div><p style='{label}'>生成された映像</p>{right}</div>"
                 "</div>"
                 f"<p style='{label}'>生成条件</p>"
@@ -3073,9 +3180,14 @@ def _copy_cut_sources(state: WorkflowState, package: Path) -> list[dict]:
 
     for cut_id in sorted(set(shots) | {int(k) for k in artifacts}):
         shot = shots.get(cut_id, {})
-        asset = shot.get("asset", {}) or {}
+        asset = shot.get("asset") or {}
         entry: dict[str, Any] = {
             "cut_id": cut_id,
+            # 出典の有無は generation_mode で決まる。text_to_video のカットは
+            # 元になった写真が存在しないため、その旨を明記して記録する。
+            "generation_mode": str(
+                shot.get("generation_mode") or "image_to_video"
+            ),
             "asset_id": asset.get("asset_id"),
             "title": asset.get("title"),
             "source_url": asset.get("source_url"),
@@ -3084,8 +3196,10 @@ def _copy_cut_sources(state: WorkflowState, package: Path) -> list[dict]:
             "original_sha256": asset.get("sha256"),
             "selection_reason": asset.get("selection_reason"),
         }
+        # 空文字は Path(".") になり exists() を通過してしまう（P0-3と同じ罠）。
+        # text_to_video のカットは local_path を持たないため必ずここを通る。
         original = Path(str(asset.get("local_path") or ""))
-        if original.exists():
+        if str(asset.get("local_path") or "") and original.is_file():
             if not entry["original_sha256"]:
                 entry["original_sha256"] = _sha256_of(original)
             src_dir.mkdir(parents=True, exist_ok=True)
@@ -3096,8 +3210,9 @@ def _copy_cut_sources(state: WorkflowState, package: Path) -> list[dict]:
                 shutil.copy2(original, preview)
             entry["preview_path"] = str(preview.relative_to(package))
 
-        clip = Path(str((artifacts.get(str(cut_id)) or {}).get("path") or ""))
-        if clip.exists():
+        raw_clip = str((artifacts.get(str(cut_id)) or {}).get("path") or "")
+        clip = Path(raw_clip)
+        if raw_clip and clip.is_file():
             clip_dir.mkdir(parents=True, exist_ok=True)
             destination = clip_dir / f"cut_{cut_id:02d}{clip.suffix}"
             shutil.copy2(clip, destination)
