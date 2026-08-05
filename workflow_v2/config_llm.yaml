@@ -1,7 +1,7 @@
 project:
   target_award: 夜景賞、観光賞
-  theme: 北九州の夕暮れ(夜の始まり)から荘厳な夜景へ移り変わる魅力を、国内外の旅行者へ伝える観光プロモーション動画
-  target_duration_seconds: 2
+  theme: 北九州の夕暮れ(夜の始まり)から荘厳な夜景へ移り変わる魅力を、国内の旅行者へ伝える観光プロモーション動画
+  target_duration_seconds: 5
 
 autonomy_preset: manual
 
@@ -96,16 +96,16 @@ llm:
 
 production:
   backend: runway
-  model: gen4.5
+  model: seedance2_fast
   # comfy / runway
-  # model : gen4.5 / veo3.1_fast / seedance2 / hailuo3
+  # model : gen4.5 / veo3.1_fast / seedance2 / hailuo3 <-現在利用公開されていない状態
   # 課金を伴うバックエンド（クラウドAPI）用の上限。
   # 送信前に「実課金累計 + 次回見積 <= limit_usd」を必ず検査する。
   # ローカル(comfy/mock)は無料なのでこの設定に関わらず素通しする。
   cost_guard:
     enabled: true
     limit_usd: 20.0
-  max_video_cuts_per_run: 5
+  max_video_cuts_per_run: 1
   continue_on_cut_error: false
   profile: draft
   profiles:
@@ -200,12 +200,24 @@ runway:
       # Runway公式: 4〜15秒の整数尺。
       allowed_seconds: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
       resolutions: ["1280:720"]
-      supports_seed: true
+      # 実API検証済み(2026-08-04 run-d6cdf58046): seedを送ると400。
+      #   {"code":"unrecognized_keys","keys":["seed"]}
+      # Seedance系は seed パラメータ自体を持たない。
+      supports_seed: false
       # negativePromptはVeo系のみ公式に明記。Seedanceには送らない。
       supports_negative_prompt: false
       has_native_audio: true
       # audioフィールドの受理可否が未確認なので送らない。出力音声はPhase 08で除去。
       cost_per_second_usd: 0.36    # 480p/720p価格
+    seedance2_fast:
+      # 尺は seedance2 と同一（利用者確認済み）。
+      allowed_seconds: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      resolutions: ["1280:720"]
+      # seedance2 の400実績から同族と判断。実APIで再確認すること。
+      supports_seed: false
+      supports_negative_prompt: false
+      has_native_audio: true
+      cost_per_second_usd: 0.29    # Runway公式: 29 credits/秒（480p/720p）
     hailuo3:
       # Runway Dev公式Playground: 2K、5〜15秒、15 credits/秒。
       allowed_seconds: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
