@@ -864,6 +864,111 @@ def _ranked_candidates_for_cut(
     )
 
 
+def _score_candidate_for_cut(
+    cut: dict[str, Any],
+    candidate: dict[str, Any],
+    award: str,
+) -> int:
+    """Score one candidate for one cut using the shortlist's own criteria.
+
+    ショートリスト外の素材を人間が指定したとき、その素材には
+    scores_by_cut が付いていない。同じ基準で採点し直すことで、
+    「なぜ低かったのか」を証跡に残せるようにする。
+    """
+    award_genre = deterministic.AWARD_GENRES.get(award)
+    _, score = _tod_eval(
+        str(cut.get("time_of_day", "unspecified")),
+        candidate.get("time_of_day", "unknown_or_day"),
+    )
+    score += _location_score(str(cut.get("location", "")), candidate.get("areas", []))
+    if award_genre and award_genre in candidate.get("genres", []):
+        score += 3 if str(cut.get("visual_role", "")) in _CLIMAX_ROLES else 1
+    score += _subject_score(cut, candidate.get("title", ""))
+    return int(score)
+
+
+def _resolve_requested_asset(
+    requested_id: str,
+    cut: dict[str, Any],
+    ranked: list[dict[str, Any]],
+    all_candidates: list[dict[str, Any]],
+    award: str,
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Resolve a human-named asset, allowing choices outside the shortlist.
+
+    ショートリストは機械の提案であって、人間の指示を却下する根拠ではない。
+    上位N件に入らなかったという理由だけで拒否せず、「実際に使えるか」
+    ——ローカルに実体があり、利用条件を満たすか——だけで判断する。
+
+    Returns:
+        (採用する素材 or None, 拒否理由 or None, 警告 or None)
+    """
+    cut_id = int(cut["id"])
+    inside = next(
+        (item for item in ranked if item["asset_id"] == requested_id),
+        None,
+    )
+    if inside is not None:
+        return inside, None, None
+
+    outside = next(
+        (
+            item
+            for item in all_candidates
+            if item["asset_id"] == requested_id
+        ),
+        None,
+    )
+    if outside is None:
+        return None, (
+            f"cut {cut_id}: 指定素材{requested_id}は素材カタログに存在しません"
+        ), None
+
+    # ここから先は「スコアが低い」ではなく「使えない」場合だけ拒否する。
+    # 課金してから失敗するより、選定の時点で止めるほうが安い。
+    local_path = str(outside.get("local_path") or "")
+    if not outside.get("local_available") or not local_path:
+        return None, (
+            f"cut {cut_id}: 指定素材{requested_id}はローカルに未取得です"
+        ), None
+    if not Path(local_path).is_file():
+        return None, (
+            f"cut {cut_id}: 指定素材{requested_id}のローカルファイルが"
+            f"見つかりません: {local_path}"
+        ), None
+    rights = str(outside.get("rights_status") or "")
+    if rights != "approved_for_agewec_submission":
+        return None, (
+            f"cut {cut_id}: 指定素材{requested_id}は利用条件を満たしません"
+            f"（rights_status={rights or '不明'}）"
+        ), None
+
+    # 採用する。ショートリスト由来の情報が無いので、同じ基準で補う。
+    score = _score_candidate_for_cut(cut, outside, award)
+    resolved = {
+        **outside,
+        "eligible_cut_ids": sorted(
+            {
+                int(value)
+                for value in outside.get("eligible_cut_ids", [])
+            }
+            | {cut_id}
+        ),
+        "scores_by_cut": {
+            **{
+                str(key): int(value)
+                for key, value in (outside.get("scores_by_cut") or {}).items()
+            },
+            str(cut_id): score,
+        },
+        "outside_shortlist": True,
+    }
+    return resolved, None, (
+        f"cut {cut_id}: {requested_id}は機械の候補外（スコア{score}）でしたが、"
+        "人間の明示指定により採用しました"
+    )
+
+
 def _code_asset_reason(
     cut: dict[str, Any],
     candidate: dict[str, Any],
@@ -875,8 +980,15 @@ def _code_asset_reason(
         "n/a",
     )
     if source == "explicit_feedback":
+        # 候補外を指定した場合は、後から「なぜこの写真か」を追えるよう明記する
+        outside = (
+            "機械の候補（上位N件）には入っていなかったが、"
+            if candidate.get("outside_shortlist")
+            else ""
+        )
         return (
-            f"人間の明示指定により{candidate.get('title', '')}を採用。"
+            f"{outside}人間の明示指定により"
+            f"{candidate.get('title', '')}を採用。"
             f"対象カットの事前適合スコアは{score}。"
         )
     if source == "retry_next_candidate":
@@ -909,13 +1021,15 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
             confidence=0.0,
             blocking_issues=["Storyboardが必要"],
         )
-    candidates = _asset_candidates(state)
+    # ショートリストは「機械の提案」。人間の明示指定はここに縛られないため、
+    # 絞り込み前の全件も保持しておく（_resolve_requested_asset が使う）。
+    all_candidates = _asset_candidates(state)
     award = _approved_project_value(state, "target_award", "夜景賞")
     per_cut = int(
         state.get("config", {}).get("assets", {}).get("shortlist_per_cut", 8)
     )
     candidates = _shortlist_candidates(
-        storyboard["cuts"], candidates, award, per_cut
+        storyboard["cuts"], all_candidates, award, per_cut
     )
     context = _review_context(state, "asset_curator")
     target_cut_id = context.get("target_cut_id")
@@ -1003,20 +1117,18 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
             )
         )
         if requested_id:
-            requested = next(
-                (
-                    candidate
-                    for candidate in ranked
-                    if candidate["asset_id"] == requested_id
-                ),
-                None,
+            requested, rejection, warning = _resolve_requested_asset(
+                requested_id,
+                cut,
+                ranked,
+                all_candidates,
+                award,
             )
             if requested is None:
-                blocking.append(
-                    f"cut {cut_id}: 指定素材{requested_id}は"
-                    "このカットのeligible候補ではありません"
-                )
+                blocking.append(str(rejection))
                 continue
+            if warning:
+                warnings.append(warning)
             primary = requested
             source = "explicit_feedback"
         elif target_cut_id is not None and previous_id:
