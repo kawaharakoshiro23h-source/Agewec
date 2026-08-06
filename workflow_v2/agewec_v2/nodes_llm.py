@@ -1249,6 +1249,29 @@ def director(state: WorkflowState) -> dict[str, Any]:
     target_cut_id = context.get("target_cut_id")
     if target_cut_id is not None:
         target_cut_id = int(target_cut_id)
+    config = state.get("config", {})
+    production = config.get("production", {})
+    backend = str(production.get("backend") or "mock").lower()
+    default_model = str(production.get("model") or "") or None
+    runway_models = dict(config.get("runway", {}).get("models", {}))
+    available_models = [
+        {
+            "model": name,
+            "generation_modes": list(
+                spec.get(
+                    "generation_modes",
+                    ["image_to_video", "text_to_video"],
+                )
+            ),
+            "allowed_seconds": list(spec.get("allowed_seconds", [])),
+            "resolutions": list(spec.get("resolutions", [])),
+            "has_native_audio": bool(spec.get("has_native_audio", False)),
+            "cost_per_second_usd": float(
+                spec.get("cost_per_second_usd", 0.0)
+            ),
+        }
+        for name, spec in runway_models.items()
+    ] if backend == "runway" else []
 
     def transform(data: dict[str, Any]) -> dict[str, Any]:
         cut_map = {int(cut["id"]): cut for cut in storyboard["cuts"]}
@@ -1271,10 +1294,19 @@ def director(state: WorkflowState) -> dict[str, Any]:
             mode = str(
                 direction.get("generation_mode") or "image_to_video"
             )
+            selected_model = (
+                str(direction.get("model") or default_model or "") or None
+            )
             if cut_id not in cut_map:
                 invalid.append(f"unknown cut={cut_id}")
                 continue
             if target_cut_id is not None and cut_id != target_cut_id:
+                continue
+            if backend == "runway" and selected_model not in runway_models:
+                invalid.append(
+                    f"cut={cut_id}, model={selected_model or '(empty)'} "
+                    "is not configured for Runway"
+                )
                 continue
             # text_to_video は参照写真を使わないため、素材の割当検証を行わない。
             # 画像が無いことを理由に自動でこのモードへ落とすことはしない
@@ -1302,6 +1334,7 @@ def director(state: WorkflowState) -> dict[str, Any]:
             new_shots[cut_id] = {
                 **cut_map[cut_id],
                 "generation_mode": mode,
+                "model": selected_model if backend == "runway" else None,
                 "asset": asset,
                 "positive_prompt": direction["positive_prompt"],
                 "negative_prompt": direction["negative_prompt"],
@@ -1365,6 +1398,11 @@ def director(state: WorkflowState) -> dict[str, Any]:
                 "When target_cut_id is supplied, return only that cut. "
                 "All other approved shots are locked."
             ),
+            "video_model_policy": {
+                "backend": backend,
+                "default_model": default_model,
+                "available_models": available_models,
+            },
         },
         summary=lambda data: (
             f"LLMが{len(data['shots'])}カットの演出指示を確定"

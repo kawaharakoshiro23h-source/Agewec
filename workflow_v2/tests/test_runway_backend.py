@@ -47,7 +47,7 @@ MODELS = {
         "resolutions": ["2K"],
         "resolution": "2K",
         "prompt_image_format": "keyframes",
-        "generation_modes": ["image_to_video"],
+        "generation_modes": ["image_to_video", "text_to_video"],
         "supports_seed": False,
         "supports_negative_prompt": False,
         "has_native_audio": True,
@@ -320,6 +320,15 @@ class RunwayBackendTest(unittest.TestCase):
         self.assertEqual(gen.resolve_seconds(5.0), 5.0)
         self.assertNotEqual(veo.cost_per_second_usd, gen.cost_per_second_usd)
 
+    def test_request_model_overrides_backend_default_per_cut(self) -> None:
+        result = self._backend("gen4.5").generate(
+            self._request(seconds=5.0, model="hailuo3")
+        )
+        payload = FakeRunwayHandler.payloads[0]
+        self.assertEqual(payload["model"], "hailuo3")
+        self.assertEqual(payload["resolution"], "2K")
+        self.assertEqual(result.model, "hailuo3")
+
     # ------------------------------------------------------------ 異常系
     def test_duration_over_model_limit_raises(self) -> None:
         with self.assertRaises(UnsupportedDurationError):
@@ -363,17 +372,22 @@ class RunwayBackendTest(unittest.TestCase):
             )
         self.assertEqual(FakeRunwayHandler.endpoints, [])
 
-    def test_hailuo_rejects_unverified_text_to_video_before_sending(self) -> None:
-        with self.assertRaisesRegex(RunwayError, "現在 text_to_video に未対応"):
-            self._backend("hailuo3").generate(
-                self._request(
-                    seconds=5.0,
-                    image_path="",
-                    generation_mode="text_to_video",
-                )
+    def test_hailuo_text_to_video_uses_text_endpoint_without_upload(self) -> None:
+        result = self._backend("hailuo3").generate(
+            self._request(
+                seconds=5.0,
+                image_path="",
+                generation_mode="text_to_video",
             )
-        self.assertEqual(FakeRunwayHandler.endpoints, [])
+        )
+        self.assertEqual(FakeRunwayHandler.endpoints, ["/v1/text_to_video"])
         self.assertEqual(FakeRunwayHandler.upload_preparations, [])
+        self.assertEqual(FakeRunwayHandler.signed_uploads, 0)
+        payload = FakeRunwayHandler.payloads[0]
+        self.assertEqual(payload["model"], "hailuo3")
+        self.assertEqual(payload["resolution"], "2K")
+        self.assertNotIn("promptImage", payload)
+        self.assertEqual(result.settings["generation_mode"], "text_to_video")
 
     def test_image_to_video_without_an_image_raises(self) -> None:
         with self.assertRaises(RunwayError):

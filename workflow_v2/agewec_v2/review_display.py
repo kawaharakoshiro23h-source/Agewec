@@ -202,6 +202,7 @@ def _director(data: dict[str, Any]) -> list[str]:
                     f"（{_text(shot.get('seconds'))}秒）"
                 ),
                 f"    映像: {_text(shot.get('scene'))}",
+                f"    使用モデル: {_text(shot.get('model'))}",
                 f"    使用素材: {_text(asset.get('title'))}",
                 f"    カメラ: {_text(shot.get('camera_motion'))}",
                 f"    生成指示: {_text(shot.get('positive_prompt'))}",
@@ -214,11 +215,17 @@ def _director(data: dict[str, Any]) -> list[str]:
 def _support_video(data: dict[str, Any]) -> list[str]:
     requests = data.get("requests") or []
     cost = data.get("cost_estimate") or {}
+    request_models = list(dict.fromkeys(
+        str(request.get("model"))
+        for request in requests
+        if request.get("model")
+    ))
+    model_label = cost.get("model") or " / ".join(request_models) or data.get("model")
     backend = str(data.get("backend") or "—")
     backend_label = "Runway API" if backend == "runway" else backend
     lines = [
         f"  生成先: {backend_label}",
-        f"  使用モデル: {_text(cost.get('model'))}",
+        f"  使用モデル: {_text(model_label)}",
         f"  対象: {len(requests)}カット",
     ]
     if data.get("profile_name"):
@@ -241,6 +248,7 @@ def _support_video(data: dict[str, Any]) -> list[str]:
                     f"  Cut {request.get('cut_id')}: "
                     f"{_text(request.get('requested_seconds'))}秒"
                 ),
+                f"    使用モデル: {_text(request.get('model'))}",
                 source_line,
                 *(
                     [f"    生成解像度: {_text(request.get('resolution'))}"]

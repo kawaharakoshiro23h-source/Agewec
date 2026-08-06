@@ -50,8 +50,8 @@ execution_limits:
   max_total_phase_executions: 60
   max_runtime_minutes: 60
   on_limit: human_review
-  max_generation_attempts_per_cut: 2
-  max_total_production_attempts: 20
+  max_generation_attempts_per_cut: 4
+  max_total_production_attempts: 25
 
 llm:
   enabled: true
@@ -165,8 +165,8 @@ comfy:
     file_prefix: {node_id: "", input: filename_prefix}
 
 # --- クラウド動画生成（Runway Dev API）-------------------------------------
-# 単一の統合で複数モデルを切り替えられる。model を変えるだけで比較できる。
-#   backend: runway / model: veo3.1_fast  のように production 側で指定する。
+# 単一の統合で複数モデルを切り替えられる。production.model は全カットの既定値。
+# Directorがカット単位で runway.models 内の別モデルを選ぶこともできる。
 # 料金・許容尺は変動するため、必ず Runway のダッシュボードで最新値を確認すること。
 runway:
   base_url: https://api.dev.runwayml.com
@@ -219,13 +219,13 @@ runway:
       has_native_audio: true
       cost_per_second_usd: 0.29    # Runway公式: 29 credits/秒（480p/720p）
     hailuo3:
-      # Runway Dev公式Playground: 2K、5〜15秒、15 credits/秒。
+      # Runway Dev公式Playground: 2K、5〜15秒、15 credits/秒。768P 5〜15秒、10 credits/秒
       allowed_seconds: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
       resolutions: ["768P"]
       resolution: "768P"
       prompt_image_format: keyframes
-      # Runway経由で確認済みなのはI2V。未確認のT2Vへ誤送信しない。
-      generation_modes: [image_to_video]
+      # I2V/T2Vの両方式をカット単位で選択可能。T2Vの実API疎通は未確認。
+      generation_modes: [image_to_video, text_to_video]
       supports_seed: false
       supports_negative_prompt: false
       has_native_audio: true

@@ -457,6 +457,87 @@ class ServerTest(unittest.TestCase):
             status_seen = 404 if "404" in str(exc) else None
         self.assertEqual(status_seen, 404)
 
+    def test_ui_javascript_parses(self) -> None:
+        """ui.html のJavaScriptが構文として通ること。
+
+        構文エラーはスクリプト全体を停止させ、画面が真っ白になる。
+        （実際に `const signature` の二重宣言でこれを起こした）
+        node があるときだけ実行する。
+        """
+        import re
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node が無いので構文チェックを省略")
+        html = (
+            Path(__file__).resolve().parents[1]
+            / "agewec_v2" / "monitor" / "ui.html"
+        ).read_text(encoding="utf-8")
+        scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+        self.assertTrue(scripts, "scriptブロックが見つからない")
+        with tempfile.TemporaryDirectory() as tmp:
+            js = Path(tmp) / "ui.js"
+            js.write_text("\n".join(scripts), encoding="utf-8")
+            result = subprocess.run(
+                [node, "--check", str(js)],
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ui_ignores_the_clock_when_deciding_to_redraw(self) -> None:
+        """時計の進行を「状況の変化」と誤判定しないこと。
+
+        画面は差分があるときだけ再描画する。全再描画は <video> を作り直す
+        ため、2秒ごとに走ると動画の読み込みが毎回リセットされ、再生できない。
+        判定から除外すべき揮発キーが、reader の出力と対応しているかを見る。
+        """
+        import re
+        ui = (
+            Path(__file__).resolve().parents[1]
+            / "agewec_v2" / "monitor" / "ui.html"
+        ).read_text(encoding="utf-8")
+        match = re.search(r"VOLATILE_KEYS = new Set\(\[([^\]]*)\]\)", ui)
+        self.assertIsNotNone(match, "揮発キーの定義が見つからない")
+        volatile = set(re.findall(r'"([^"]+)"', match.group(1)))
+        # reader が毎回変える値は、すべて除外対象に入っていること
+        self.assertIn("now", volatile)
+        self.assertIn("elapsed_seconds", volatile)
+        # 経過は画面を作り直さず差し替える仕組みがあること
+        self.assertIn('data-live="elapsed"', ui)
+        self.assertIn("refreshElapsed", ui)
+
+    def test_only_volatile_fields_change_between_polls(self) -> None:
+        """同じ内容を2回読んだとき、差分が揮発キーだけであること。
+
+        ここに他のキーが混ざると、画面が毎回作り直されて動画が止まる。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _build_run(root, "run-a")
+            first = read_run(root, "run-a", now=1000.0)
+            second = read_run(root, "run-a", now=1002.0)
+
+        def differing(a, b, path=""):
+            if isinstance(a, dict) and isinstance(b, dict):
+                keys = set(a) | set(b)
+                out = set()
+                for key in keys:
+                    out |= differing(a.get(key), b.get(key), key)
+                return out
+            if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+                out = set()
+                for x, y in zip(a, b):
+                    out |= differing(x, y, path)
+                return out
+            return set() if a == b else {path}
+
+        self.assertLessEqual(
+            differing(first, second),
+            {"now", "elapsed_seconds", "idle_seconds"},
+        )
+
     def test_no_write_methods(self) -> None:
         """POST等を実装していない＝ブラウザから状態を変えられない。"""
         self.assertFalse(hasattr(MonitorHandler, "do_POST"))

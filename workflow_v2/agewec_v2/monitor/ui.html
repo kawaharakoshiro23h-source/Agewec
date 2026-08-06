@@ -138,13 +138,15 @@ function renderNow(state) {
   if (a.state === "generating") {
     return `<div class="now gen"><div class="spinner"></div><div>
       <div class="big">Cut ${esc(a.cut_id)} を生成中（${esc(a.attempt)}回目）</div>
-      <div class="muted">06 映像生成 — 経過 ${secs(a.elapsed_seconds)}
+      <div class="muted">06 映像生成 — 経過
+        <span data-live="elapsed">${secs(a.elapsed_seconds)}</span>
         ${a.stale ? "／応答が長引いています" : ""}</div></div></div>`;
   }
   if (a.state === "waiting") {
     return `<div class="now"><div class="spinner"></div><div>
       <div class="big">${esc(a.number || "")} ${esc(a.title || "")} が完了</div>
-      <div class="muted">ターミナルでの承認待ちとみられます — 経過 ${secs(a.elapsed_seconds)}</div>
+      <div class="muted">ターミナルでの承認待ちとみられます — 経過
+        <span data-live="elapsed">${secs(a.elapsed_seconds)}</span></div>
       </div></div>`;
   }
   if (a.state === "completed") {
@@ -196,7 +198,8 @@ function renderOutput(phase) {
     push("カットごとの演出", out.shots.map((s) => `<div class="shot">
       <div class="t">Cut ${esc(s.id ?? s.cut_id)} ${esc(s.name || "")}
         <span class="muted">${esc((s.asset || {}).asset_id
-          || (s.generation_mode === "text_to_video" ? "text_to_video" : ""))}</span></div>
+          || (s.generation_mode === "text_to_video" ? "text_to_video" : ""))}
+          ${s.model ? ` / ${esc(s.model)}` : ""}</span></div>
       <div class="pick">
         ${s.asset ? thumb(s.asset, "") : `<div class="thumb muted">完全生成</div>`}
         <div style="min-width:0">
@@ -326,14 +329,18 @@ function render(state) {
   };
   // 動いているときだけ経過を刻む。止まった run では時刻と総所要を出す。
   const live = activity.state === "generating" || activity.state === "waiting";
+  // 経過だけは毎回変わるので、data-live を付けて後から文字だけ差し替える
   const kpis = [
-    ["進行", `${done} / ${state.phases.length} 工程`],
-    ["現在の状態", stateLabel[activity.state] || "—"],
+    ["進行", `${done} / ${state.phases.length} 工程`, false],
+    ["現在の状態", stateLabel[activity.state] || "—", false],
     live
-      ? ["経過", secs(activity.elapsed_seconds)]
-      : ["総所要", secs(activity.total_seconds)],
-    ["動画生成の実課金", "$" + (state.cost.spent_usd || 0).toFixed(2)],
-  ].map(([k, v]) => `<div class="kpi"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join("");
+      ? ["経過", secs(activity.elapsed_seconds), true]
+      : ["総所要", secs(activity.total_seconds), false],
+    ["動画生成の実課金", "$" + (state.cost.spent_usd || 0).toFixed(2), false],
+  ].map(([k, v, isLive]) =>
+    `<div class="kpi"><span>${esc(k)}</span>` +
+    `<strong${isLive ? ' data-live="elapsed"' : ""}>${esc(v)}</strong></div>`
+  ).join("");
 
   const finalVideo = state.final_video_url
     ? `<div class="card"><h2>最終動画</h2>
@@ -350,15 +357,33 @@ function render(state) {
     ${finalVideo}`;
 }
 
+// 時計の進行で変わる値。これらを除いたものを「状況」として比較する。
+const VOLATILE_KEYS = new Set(["now", "elapsed_seconds", "idle_seconds"]);
+
+function contentSignature(state) {
+  return JSON.stringify(state, (key, value) =>
+    VOLATILE_KEYS.has(key) ? undefined : value);
+}
+
+// 経過表示だけを更新する。画面を作り直さないので動画の再生が途切れない。
+function refreshElapsed(state) {
+  const activity = state.activity || {};
+  const live = activity.state === "generating" || activity.state === "waiting";
+  if (!live) return;
+  const text = secs(activity.elapsed_seconds);
+  document.querySelectorAll('[data-live="elapsed"]')
+    .forEach((node) => { node.textContent = text; });
+}
+
 async function tick() {
   const statusEl = document.getElementById("status");
   try {
     const runsRes = await fetch("/api/runs");
     const { runs } = await runsRes.json();
     const select = document.getElementById("runs");
-    const signature = runs.map((r) => r.run_id).join(",");
-    if (select.dataset.signature !== signature) {
-      select.dataset.signature = signature;
+    const runsSignature = runs.map((r) => r.run_id).join(",");
+    if (select.dataset.signature !== runsSignature) {
+      select.dataset.signature = runsSignature;
       select.innerHTML = runs
         .map((r) => `<option value="${esc(r.run_id)}">${esc(r.run_id)}</option>`).join("");
       if (selectedRun) select.value = selectedRun;
@@ -367,11 +392,15 @@ async function tick() {
 
     const res = await fetch("/api/state?run=" + encodeURIComponent(selectedRun));
     const state = await res.json();
-    // 内容が変わったときだけ描き直す（動画の再生位置を巻き戻さないため）
-    const signature2 = JSON.stringify(state);
-    if (signature2 !== lastSignature) {
-      lastSignature = signature2;
+    // 「状況が変わったか」だけで描き直す。時計の進行は変化とみなさない。
+    // 全再描画は <video> を作り直すため、2秒ごとに走ると読み込みが
+    // 毎回リセットされ、再生できなくなる。
+    const signature = contentSignature(state);
+    if (signature !== lastSignature) {
+      lastSignature = signature;
       render(state);
+    } else {
+      refreshElapsed(state);   // 数字だけ差し替える（DOMは壊さない）
     }
     const st = (state.activity || {}).state;
     const live = st === "generating" || st === "waiting";

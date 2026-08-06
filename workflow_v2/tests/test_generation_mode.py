@@ -9,14 +9,17 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pydantic
 from lxml import html as LH
 
 from agewec_v2.backends import to_video_request
+from agewec_v2 import nodes_llm
 from agewec_v2.llm.schemas import DirectionPlan, DirectionShot
 from agewec_v2.pipeline_runtime import (
     _copy_cut_sources,
@@ -49,6 +52,19 @@ class SchemaTest(unittest.TestCase):
             if k != "generation_mode"
         })
         self.assertEqual(shot.generation_mode, "image_to_video")
+        self.assertIsNone(shot.model)
+
+    def test_model_is_optional_but_cannot_be_blank(self) -> None:
+        shot = DirectionShot(**{
+            **_shot(1, "image_to_video", asset_id="asset-001"),
+            "model": "gen4.5",
+        })
+        self.assertEqual(shot.model, "gen4.5")
+        with self.assertRaises(pydantic.ValidationError):
+            DirectionShot(**{
+                **_shot(1, "image_to_video", asset_id="asset-001"),
+                "model": "  ",
+            })
 
     def test_image_to_video_requires_asset(self) -> None:
         with self.assertRaises(pydantic.ValidationError):
@@ -81,6 +97,98 @@ class SchemaTest(unittest.TestCase):
         )
 
 
+class DirectorModelSelectionTest(unittest.TestCase):
+    def _state(self) -> dict:
+        return {
+            "config": {
+                "production": {
+                    "backend": "runway",
+                    "model": "gen4.5",
+                },
+                "runway": {
+                    "models": {
+                        "gen4.5": {
+                            "allowed_seconds": list(range(2, 11)),
+                            "resolutions": ["1280:720"],
+                            "cost_per_second_usd": 0.12,
+                        },
+                        "hailuo3": {
+                            "allowed_seconds": list(range(5, 16)),
+                            "resolutions": ["768P"],
+                            "generation_modes": [
+                                "image_to_video", "text_to_video"
+                            ],
+                            "has_native_audio": True,
+                            "cost_per_second_usd": 0.15,
+                        },
+                    }
+                },
+            },
+            "phase_results": {
+                "writer_storyboard": {
+                    "data": {"cuts": [{
+                        "id": 1, "name": "夜景", "seconds": 5.0,
+                    }]},
+                },
+                "asset_curator": {
+                    "data": {"asset_assignments": [{
+                        "cut_id": 1,
+                        "primary": {"asset_id": "asset-001"},
+                        "alternatives": [],
+                    }]},
+                },
+                "creative_director": {"data": {"camera_intent": {}}},
+            },
+            "review_context": {},
+            "feedback": {},
+        }
+
+    @staticmethod
+    def _llm_output(model: str | None) -> dict:
+        return {
+            "shots": [{
+                "cut_id": 1,
+                "generation_mode": "image_to_video",
+                "model": model,
+                "asset_id": "asset-001",
+                "positive_prompt": "night view",
+                "negative_prompt": "",
+                "camera_motion": "slow pan",
+                "motion_intensity": "subtle",
+                "rationale": "モデル適性に基づく",
+                "camera_intent_alignment": "整合",
+                "deviation_reason": None,
+            }],
+            "continuity_checks": ["色調を維持"],
+        }
+
+    def test_director_carries_selected_model_and_receives_capabilities(self) -> None:
+        captured = {}
+
+        def fake_run_role(_state, **kwargs):
+            captured.update(kwargs["upstream"]["video_model_policy"])
+            return kwargs["transform"](self._llm_output("hailuo3"))
+
+        with patch.object(nodes_llm, "_run_role", side_effect=fake_run_role):
+            result = nodes_llm.director(self._state())
+
+        self.assertEqual(result["shots"][0]["model"], "hailuo3")
+        self.assertEqual(captured["default_model"], "gen4.5")
+        self.assertEqual(
+            [item["model"] for item in captured["available_models"]],
+            ["gen4.5", "hailuo3"],
+        )
+
+    def test_director_uses_default_when_model_is_omitted(self) -> None:
+        def fake_run_role(_state, **kwargs):
+            return kwargs["transform"](self._llm_output(None))
+
+        with patch.object(nodes_llm, "_run_role", side_effect=fake_run_role):
+            result = nodes_llm.director(self._state())
+
+        self.assertEqual(result["shots"][0]["model"], "gen4.5")
+
+
 def _state(tmp: str, shots: list[dict]) -> dict:
     return {
         "run_id": "run-mode-test",
@@ -100,6 +208,14 @@ def _state(tmp: str, shots: list[dict]) -> dict:
                     "allowed_seconds": list(range(2, 11)),
                     "resolutions": ["1280:720"],
                     "cost_per_second_usd": 0.12,
+                }, "hailuo3": {
+                    "allowed_seconds": list(range(5, 16)),
+                    "resolutions": ["768P"],
+                    "resolution": "768P",
+                    "generation_modes": ["image_to_video", "text_to_video"],
+                    "supports_seed": False,
+                    "supports_negative_prompt": False,
+                    "cost_per_second_usd": 0.15,
                 }},
             },
         },
@@ -113,13 +229,20 @@ def _state(tmp: str, shots: list[dict]) -> dict:
     }
 
 
-def _director_shot(cut_id: int, mode: str, image: str | None) -> dict:
+def _director_shot(
+    cut_id: int,
+    mode: str,
+    image: str | None,
+    *,
+    model: str | None = None,
+) -> dict:
     return {
         "id": cut_id,
         "name": f"カット{cut_id}",
         "seconds": 5.0,
         "time_of_day": "night",
         "generation_mode": mode,
+        **({"model": model} if model else {}),
         "asset": ({"asset_id": f"asset-{cut_id:03d}", "title": f"素材{cut_id}",
                    "local_path": image} if image else None),
         "positive_prompt": f"prompt {cut_id}",
@@ -135,7 +258,8 @@ class Phase055ValidationTest(unittest.TestCase):
 
     def _run(self, shots: list[dict]):
         with tempfile.TemporaryDirectory() as tmp:
-            return support_video_creator(_state(tmp, shots))
+            with patch.dict(os.environ, {"RUNWAY_API_KEY": "test-key"}):
+                return support_video_creator(_state(tmp, shots))
 
     def test_text_to_video_needs_no_image(self) -> None:
         result = self._run([_director_shot(1, "text_to_video", None)])
@@ -196,6 +320,44 @@ class Phase055ValidationTest(unittest.TestCase):
         self.assertEqual(requests["2"]["generation_mode"], "text_to_video")
         self.assertEqual(requests["2"]["image_path"], "")
 
+    def test_mixed_models_use_each_cut_contract_and_cost(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as image:
+            result = self._run([
+                _director_shot(
+                    1, "image_to_video", image.name, model="gen4.5"
+                ),
+                _director_shot(
+                    2, "text_to_video", None, model="hailuo3"
+                ),
+            ])
+        requests = result["production_requests"]
+        self.assertEqual(requests["1"]["model"], "gen4.5")
+        self.assertEqual(requests["1"]["ratio"], "1280:720")
+        self.assertEqual(requests["2"]["model"], "hailuo3")
+        self.assertEqual(requests["2"]["resolution"], "768P")
+        estimate = result["phase_results"]["support_video_creator"]["data"][
+            "cost_estimate"
+        ]
+        self.assertEqual(estimate["models"], ["gen4.5", "hailuo3"])
+        self.assertAlmostEqual(estimate["total_usd"], 1.35)
+        self.assertEqual(
+            [cut["model"] for cut in estimate["cuts"]],
+            ["gen4.5", "hailuo3"],
+        )
+
+    def test_missing_cut_model_uses_production_default(self) -> None:
+        result = self._run([_director_shot(1, "text_to_video", None)])
+        self.assertEqual(result["production_requests"]["1"]["model"], "gen4.5")
+
+    def test_unknown_cut_model_is_blocked_before_generation(self) -> None:
+        result = self._run([
+            _director_shot(1, "text_to_video", None, model="unknown-model")
+        ])
+        blocking = result["phase_results"]["support_video_creator"][
+            "blocking_issues"
+        ]
+        self.assertTrue(any("unknown-model" in item for item in blocking), blocking)
+
 
 class VideoRequestTest(unittest.TestCase):
     def test_mode_is_carried_to_the_backend(self) -> None:
@@ -218,12 +380,14 @@ class PresentationTest(unittest.TestCase):
             "backend": "runway", "model": "gen4.5",
             "requests": [
                 {"cut_id": 1, "generation_mode": "text_to_video",
+                 "model": "gen4.5",
                  "requested_seconds": 5.0, "image_path": "",
                  "camera_motion": "pan", "positive_prompt": "p"},
             ],
         })
         joined = "\n".join(lines)
         self.assertIn("Text to Video", joined)
+        self.assertIn("使用モデル: gen4.5", joined)
         self.assertNotIn("元画像: —", joined)
 
     def test_cut_qa_shows_the_mode(self) -> None:
@@ -278,6 +442,7 @@ class ProvenanceTest(unittest.TestCase):
             )
         entry = index["cuts"][0]
         self.assertEqual(entry["generation_mode"], "text_to_video")
+        self.assertEqual(entry["model"], "gen4.5")
         self.assertIsNone(entry["asset_id"])
         self.assertIsNone(entry["source_url"])
 

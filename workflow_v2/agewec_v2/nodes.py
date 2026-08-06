@@ -535,6 +535,8 @@ def director(state: WorkflowState) -> dict[str, Any]:
     )
     context = state.get("review_context", {}).get(phase, {})
     target_cut_id = context.get("target_cut_id")
+    production = state.get("config", {}).get("production", {})
+    default_model = str(production.get("model") or "") or None
     existing = (
         state.get("phase_results", {})
         .get(phase, {})
@@ -556,6 +558,7 @@ def director(state: WorkflowState) -> dict[str, Any]:
         shot_map[cut_id] = (
             {
                 **cut,
+                "model": default_model,
                 "asset": asset,
                 "positive_prompt": (
                     f"{cut['scene']}. {motion}. Deep blue and warm amber color "

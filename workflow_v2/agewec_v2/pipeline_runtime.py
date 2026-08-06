@@ -34,7 +34,6 @@ from .backends import (
     ComfyGenerationRequest,
     UnsupportedDurationError,
     VideoCostGuard,
-    estimate_run_cost,
     resolve_backend,
     to_video_request,
 )
@@ -142,6 +141,7 @@ def _runway_request_parameters(
     production: dict[str, Any],
     requested_seconds: float,
     generation_mode: str = "image_to_video",
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Resolve the exact model-native values that Runway will receive.
 
@@ -151,7 +151,7 @@ def _runway_request_parameters(
     request than the one actually billed.
     """
     runway = dict(config.get("runway", {}))
-    model = str(production.get("model") or "")
+    model = str(model or production.get("model") or "")
     models = dict(runway.get("models", {}))
     spec = dict(models.get(model, {}))
     if not model or not spec:
@@ -263,6 +263,9 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         generation_mode = str(
             shot.get("generation_mode") or "image_to_video"
         )
+        selected_model = str(
+            shot.get("model") or production.get("model") or ""
+        )
         image_path = str((shot.get("asset") or {}).get("local_path") or "")
         # 生成方式ごとに必要な入力が異なる。方式と入力の不一致は、
         # 課金前のここで止める（画像が無いから text_to_video、という
@@ -303,7 +306,11 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         if backend == "runway":
             try:
                 backend_parameters = _runway_request_parameters(
-                    config, production, seconds, generation_mode
+                    config,
+                    production,
+                    seconds,
+                    generation_mode,
+                    model=selected_model,
                 )
             except (UnsupportedDurationError, ValueError) as exc:
                 blocking.append(f"cut {cut_id}: {exc}")
@@ -518,30 +525,59 @@ def _video_backend(state: WorkflowState, backend: str):
 def _run_cost_estimate(
     state: WorkflowState, backend: str, requests: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-    """H2で提示する、実行全体の概算費用。無料バックエンドでは None。"""
+    """H2で提示する、カット別モデルを反映した実行全体の概算費用。"""
     try:
         adapter = _video_backend(state, backend)
-        caps = adapter.capabilities(
-            str((requests[0] if requests else {}).get("model") or "") or None
-        )
     except Exception:  # noqa: BLE001
         return None
-    if caps.cost_per_second_usd <= 0:
+    if not requests:
         return None
-    cuts = [
-        {
-            "id": request.get("cut_id"),
-            "seconds": float(
+    lines: list[dict[str, Any]] = []
+    models: list[str] = []
+    total = 0.0
+    for request in requests:
+        model = str(request.get("model") or "") or None
+        try:
+            caps = adapter.capabilities(model)
+            requested = float(
                 request.get("requested_seconds")
                 or request.get("actual_seconds", 0)
-            ),
-        }
-        for request in requests
-    ]
-    try:
-        return estimate_run_cost(caps, cuts)
-    except UnsupportedDurationError as exc:
-        return {"model": caps.model, "total_usd": 0.0, "error": str(exc)}
+            )
+            billed = caps.resolve_seconds(requested)
+            cost = caps.estimate_cost(requested)
+        except (UnsupportedDurationError, ValueError, RuntimeError) as exc:
+            return {
+                "model": model or "—",
+                "models": sorted(set(models + ([model] if model else []))),
+                "total_usd": round(total, 4),
+                "error": f"Cut {request.get('cut_id')}: {exc}",
+            }
+        models.append(caps.model)
+        total += cost
+        lines.append(
+            {
+                "cut_id": request.get("cut_id"),
+                "model": caps.model,
+                "requested_seconds": requested,
+                "billed_seconds": billed,
+                "cost_per_second_usd": caps.cost_per_second_usd,
+                "cost_usd": round(cost, 4),
+            }
+        )
+    unique_models = list(dict.fromkeys(models))
+    if total <= 0:
+        return None
+    return {
+        "model": " / ".join(unique_models),
+        "models": unique_models,
+        "cuts": lines,
+        "total_usd": round(total, 4),
+        "cost_per_second_usd": (
+            lines[0]["cost_per_second_usd"]
+            if len(unique_models) == 1
+            else None
+        ),
+    }
 
 
 def _video_budget(state: WorkflowState, backend: str, request: dict[str, Any]):
@@ -2181,6 +2217,7 @@ def _phase_actual_items(
                     == "text_to_video"
                     else f"asset={(shot.get('asset') or {}).get('asset_id')}"
                 )
+                + f" / model={shot.get('model') or 'default'}"
                 + f" / camera={shot.get('camera_motion')} / "
                 f"prompt={_compact_text(shot.get('positive_prompt'), 260)} / "
                 f"根拠={shot.get('rationale', '')}"
@@ -2750,6 +2787,7 @@ def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
                     "</div>"
                 )
             )
+            model_line = html.escape(str(shot.get("model") or "既定モデル"))
             cards.append(
                 f"<div style='{box}'>{head}"
                 "<div style='display:grid;grid-template-columns:220px minmax(0,1fr);"
@@ -2759,6 +2797,8 @@ def _phase_visual_cards(phase: str, state: WorkflowState) -> str:
                 + ("生成方式" if is_text_to_video else "使用素材")
                 + "</p>"
                 f"{asset_line}"
+                f"<p style='{label}'>使用モデル</p>"
+                f"<div style='font-size:12px;'>{model_line}</div>"
                 "</div><div>"
                 f"<p style='{label}'>カメラワーク</p>"
                 f"<div style='font-size:13px;'>"
@@ -3188,6 +3228,15 @@ def _copy_cut_sources(state: WorkflowState, package: Path) -> list[dict]:
             "generation_mode": str(
                 shot.get("generation_mode") or "image_to_video"
             ),
+            "model": str(
+                shot.get("model")
+                or (
+                    state.get("production_requests", {}).get(str(cut_id))
+                    or {}
+                ).get("model")
+                or state.get("config", {}).get("production", {}).get("model")
+                or ""
+            ) or None,
             "asset_id": asset.get("asset_id"),
             "title": asset.get("title"),
             "source_url": asset.get("source_url"),

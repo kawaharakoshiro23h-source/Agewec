@@ -171,7 +171,7 @@ class BackendRequestContractTest(unittest.TestCase):
                 "resolutions": ["2K"],
                 "resolution": "2K",
                 "prompt_image_format": "keyframes",
-                "generation_modes": ["image_to_video"],
+                "generation_modes": ["image_to_video", "text_to_video"],
                 "supports_seed": False,
                 "supports_negative_prompt": False,
                 "has_native_audio": True,
@@ -192,7 +192,7 @@ class BackendRequestContractTest(unittest.TestCase):
             result["data"]["cost_estimate"]["total_usd"], 0.75
         )
 
-    def test_hailuo_text_to_video_is_blocked_at_paid_preflight(self) -> None:
+    def test_hailuo_text_to_video_builds_request_at_paid_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = _base_state(directory, "", "runway")
             state["config"]["production"]["model"] = "hailuo3"
@@ -201,7 +201,7 @@ class BackendRequestContractTest(unittest.TestCase):
                 "resolutions": ["2K"],
                 "resolution": "2K",
                 "prompt_image_format": "keyframes",
-                "generation_modes": ["image_to_video"],
+                "generation_modes": ["image_to_video", "text_to_video"],
                 "supports_seed": False,
                 "supports_negative_prompt": False,
                 "has_native_audio": True,
@@ -213,15 +213,12 @@ class BackendRequestContractTest(unittest.TestCase):
             update = runtime.support_video_creator(state)
 
         result = update["phase_results"]["support_video_creator"]
-        self.assertEqual(result["status"], "error")
-        self.assertTrue(
-            any(
-                "hailuo3 は現在 text_to_video に未対応" in issue
-                for issue in result["blocking_issues"]
-            ),
-            result["blocking_issues"],
-        )
-        self.assertNotIn("1", update["production_requests"])
+        self.assertEqual(result["status"], "success")
+        request = update["production_requests"]["1"]
+        self.assertEqual(request["generation_mode"], "text_to_video")
+        self.assertEqual(request["image_path"], "")
+        self.assertEqual(request["model"], "hailuo3")
+        self.assertEqual(request["resolution"], "2K")
 
     def test_comfy_contract_preserves_ltx_profile_and_frame_rule(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

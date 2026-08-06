@@ -133,6 +133,9 @@ class DirectionShot(BaseModel):
     generation_mode: Literal["image_to_video", "text_to_video"] = (
         "image_to_video"
     )
+    # Runway使用時にカット単位で選ぶモデル。未指定なら
+    # production.model を既定値として使い、既存runとの互換性を保つ。
+    model: str | None = None
     # text_to_video のカットには参照写真が無いため asset_id を持たない
     asset_id: str | None = None
     positive_prompt: str
@@ -145,6 +148,8 @@ class DirectionShot(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_and_asset(self) -> "DirectionShot":
+        if self.model is not None and not self.model.strip():
+            raise ValueError(f"cut {self.cut_id}: modelを空文字にはできません")
         if self.generation_mode == "image_to_video" and not self.asset_id:
             raise ValueError(
                 f"cut {self.cut_id}: image_to_video には asset_id が必要です"
