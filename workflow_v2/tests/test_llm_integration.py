@@ -730,14 +730,21 @@ class LanguagePolicyTest(unittest.TestCase):
                 self.assertIn("日本語", prompt)
 
     def test_generation_prompts_stay_english(self) -> None:
-        """Runwayへ送る positive/negative prompt は英語指定であること。"""
+        """Runwayへ送る positive/negative prompt は英語指定であること。
+
+        役割定義を日本語化した後も、この例外だけは英語指定のまま残す必要が
+        ある。実際に日本語のプロンプトがRunwayへ送られていた実績があるため、
+        指示が最優先（RULE A）として置かれていることも確認する。
+        """
         prompt = self._prompt("director")
         for field in ENGLISH_PROMPT_FIELDS:
             self.assertIn(field, prompt)
-        # 「英語で書く」例外として提示されていること
-        exception_section = prompt.split("EXCEPTION")[1]
-        self.assertIn("English", exception_section)
-        self.assertIn("positive_prompt", exception_section)
+        rule_a = prompt.split("RULE A")[1].split("RULE B")[0]
+        self.assertIn("English", rule_a)
+        self.assertIn("positive_prompt", rule_a)
+        self.assertIn("never in Japanese", rule_a)
+        # 他の規則より優先されると明示されていること
+        self.assertIn("overrides", rule_a)
 
     def test_machine_tokens_are_protected_from_translation(self) -> None:
         """翻訳されると下流の照合・分岐が壊れるフィールドを守る。"""
@@ -745,7 +752,7 @@ class LanguagePolicyTest(unittest.TestCase):
         for field in MACHINE_TOKEN_FIELDS:
             with self.subTest(field=field):
                 self.assertIn(field, prompt)
-        self.assertIn("Never translate", prompt)
+        self.assertIn("never translate", prompt.lower())
 
     def test_policy_precedes_the_schema_block(self) -> None:
         """スキーマ提示より前に置き、指示として読ませる。"""
@@ -756,9 +763,32 @@ class LanguagePolicyTest(unittest.TestCase):
         )
 
     def test_role_prompt_is_still_included(self) -> None:
-        """言語ポリシー追加で役割定義を潰していないこと。"""
-        prompt = self._prompt("director")
-        self.assertIn("You are the Director.", prompt)
+        """言語ポリシー追加で役割定義を潰していないこと。
+
+        役割定義（prompts/<role>.md）は日本語で保守する方針なので、
+        英語の固定文言ではなくファイルの中身と一致するかで確認する。
+        """
+        for role in ("director", "creative_director", "writer_storyboard"):
+            with self.subTest(role=role):
+                source = (
+                    ROOT / "agewec_v2" / "prompts" / f"{role}.md"
+                ).read_text(encoding="utf-8").strip()
+                self.assertIn(source, self._prompt(role))
+
+    def test_role_prompts_are_written_in_japanese(self) -> None:
+        """人間が読んで直せるよう、役割定義は日本語で保守する。"""
+        for role in ROLE_SCHEMAS:
+            with self.subTest(role=role):
+                text = (
+                    ROOT / "agewec_v2" / "prompts" / f"{role}.md"
+                ).read_text(encoding="utf-8")
+                japanese = sum(
+                    1 for c in text
+                    if "぀" <= c <= "ヿ" or "一" <= c <= "鿿"
+                )
+                self.assertGreater(
+                    japanese, 50, f"{role}.md が日本語で書かれていない"
+                )
 
 
 if __name__ == "__main__":

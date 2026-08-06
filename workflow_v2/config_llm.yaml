@@ -96,7 +96,7 @@ llm:
 
 production:
   backend: runway
-  model: seedance2_fast
+  model: hailuo3
   # comfy / runway
   # model : gen4.5 / veo3.1_fast / seedance2 / hailuo3 <-現在利用公開されていない状態
   # 課金を伴うバックエンド（クラウドAPI）用の上限。
@@ -221,8 +221,8 @@ runway:
     hailuo3:
       # Runway Dev公式Playground: 2K、5〜15秒、15 credits/秒。
       allowed_seconds: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-      resolutions: ["2K"]
-      resolution: "2K"
+      resolutions: ["768P"]
+      resolution: "768P"
       prompt_image_format: keyframes
       # Runway経由で確認済みなのはI2V。未確認のT2Vへ誤送信しない。
       generation_modes: [image_to_video]

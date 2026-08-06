@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AGEWEC 実行モニタ</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  margin:0;padding:20px 18px 60px;background:#f4f3ef;color:#1c2522;line-height:1.6}
+.wrap{max-width:1180px;margin:0 auto}
+header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:19px;margin:0}
+select{font-size:13px;padding:4px 8px;border:1px solid #d9ddd8;border-radius:7px;background:#fff}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.live{background:#2f9e63;animation:pulse 1.6s infinite}
+.idle{background:#8b95a1}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.status{font-size:12px;color:#5b6570}
+.card{background:#fff;border:1px solid #d9ddd8;border-radius:14px;
+  box-shadow:0 6px 20px rgba(20,42,34,.05);padding:18px 20px;margin-bottom:16px}
+h2{font-size:15px;margin:0 0 12px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.kpi{background:#f4f6f4;border:1px solid #e2e6e2;border-radius:9px;padding:9px 12px}
+.kpi span{display:block;font-size:11px;color:#5b6570}
+.kpi strong{font-size:16px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:11px;color:#5b6570;font-weight:600;
+  border-bottom:1px solid #dde2de;padding:6px 8px}
+td{border-bottom:1px solid #eef1ee;padding:6px 8px;vertical-align:top}
+td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.badge{font-size:11px;padding:1px 7px;border-radius:20px;white-space:nowrap}
+.ok{background:#e4f3ea;color:#1d6b40}
+.err{background:#fbe9e7;color:#9b2c1f}
+.wait{background:#eef0ee;color:#6b7570}
+.run{background:#e8f0fb;color:#1f4f8f}
+/* 現在地 */
+.now{display:flex;gap:12px;align-items:center;background:#eef4fb;
+  border:1px solid #cfe0f2;border-radius:11px;padding:12px 14px;margin-bottom:14px}
+.now.gen{background:#eef7f1;border-color:#cbe6d6}
+.now.stop{background:#f3f4f3;border-color:#e0e3e0}
+.now .big{font-size:15px;font-weight:700}
+.spinner{width:16px;height:16px;border:2.5px solid #c3d6ea;border-top-color:#2f6db0;
+  border-radius:50%;animation:spin .9s linear infinite;flex:none}
+.now.gen .spinner{border-color:#c6e2d1;border-top-color:#2f9e63}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* 工程行 */
+tr.done td{opacity:.85}
+tr.active{background:#eef7f1}
+tr.active td:first-child::before{content:"▶";color:#2f9e63;margin-right:4px}
+tr.pending td{color:#98a1a8}
+button.open{font-size:11px;padding:2px 9px;border:1px solid #cfd6cf;background:#fff;
+  border-radius:20px;cursor:pointer;color:#3a463f;white-space:nowrap}
+button.open:hover{background:#f2f5f2}
+tr.detail td{background:#fbfcfb;padding:0}
+.detail-body{padding:10px 14px 14px}
+.detail-body h4{font-size:11px;color:#5b6570;margin:10px 0 4px;font-weight:600}
+.detail-body h4:first-child{margin-top:0}
+.kv{font-size:12.5px}
+.kv b{font-weight:600}
+.shot{background:#fff;border:1px solid #e4e8e4;border-radius:8px;
+  padding:9px 11px;margin-bottom:7px}
+.shot .t{font-size:12px;font-weight:600;margin-bottom:4px}
+pre.j{white-space:pre-wrap;background:#f0f3f7;color:#1f2933;border-radius:6px;
+  padding:8px;font-size:11.5px;margin:0;max-height:260px;overflow:auto}
+/* 素材サムネイル（クリックで原寸を別タブに） */
+.pick{display:grid;grid-template-columns:180px minmax(0,1fr);gap:12px;
+  align-items:start;margin-bottom:7px}
+.thumb{display:block;text-decoration:none;color:#5b6570;font-size:10.5px}
+.thumb img{width:100%;border-radius:7px;display:block;border:1px solid #e2e6ec;
+  background:#eef0ee}
+.thumb span{display:block;margin-top:3px}
+.thumb:hover img{outline:2px solid #2f6db0}
+.thumb.muted{display:flex;align-items:center;justify-content:center;height:96px;
+  border:1px dashed #d5dad5;border-radius:7px;font-size:11px}
+.alts .alt-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+  gap:8px}
+.cuts{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
+.cut{background:#fafbfc;border:1px solid #e2e6ec;border-radius:11px;padding:12px 13px}
+.cut h3{font-size:13px;margin:0 0 8px;display:flex;gap:8px;align-items:center}
+.media{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:8px}
+.media img,.media video{width:100%;border-radius:7px;display:block;background:#000}
+.label{font-size:10px;color:#5b6570;margin:0 0 3px}
+.prompt{white-space:pre-wrap;background:#f0f3f7;color:#1f2933;border-radius:6px;
+  padding:7px;font-size:11.5px;margin:0;max-height:120px;overflow:auto}
+.muted{color:#8b95a1;font-size:12px}
+.err-box{background:#fbe9e7;color:#9b2c1f;border-radius:6px;padding:7px;
+  font-size:11.5px;white-space:pre-wrap;word-break:break-all}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>AGEWEC 実行モニタ</h1>
+    <select id="runs"></select>
+    <span class="status" id="status"></span>
+  </header>
+  <div id="root"></div>
+</div>
+
+<script>
+"use strict";
+// 読み取り専用の監視画面。サーバへ書き込むことはしないので、
+// この画面を開閉してもパイプラインの動作には影響しない。
+const POLL_MS = 2000;
+let selectedRun = new URLSearchParams(location.search).get("run") || "";
+let lastSignature = "";
+
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function secs(value) {
+  if (value === null || value === undefined) return "—";
+  const n = Number(value);
+  if (n < 60) return n.toFixed(1) + "秒";
+  return Math.floor(n / 60) + "分" + Math.round(n % 60) + "秒";
+}
+
+function clock(epoch) {
+  if (!epoch) return "—";
+  return new Date(epoch * 1000).toLocaleTimeString();
+}
+
+function badge(status) {
+  const map = {
+    success: ["ok", "完了"], error: ["err", "失敗"],
+    skipped: ["wait", "省略"], pending: ["wait", "未実行"],
+  };
+  const [cls, text] = map[status] || ["wait", esc(status || "—")];
+  return `<span class="badge ${cls}">${text}</span>`;
+}
+
+// どの工程の詳細を開いているかは画面側の状態。再描画で閉じないよう保持する。
+const opened = new Set();
+
+function renderNow(state) {
+  const a = state.activity || {};
+  if (a.state === "generating") {
+    return `<div class="now gen"><div class="spinner"></div><div>
+      <div class="big">Cut ${esc(a.cut_id)} を生成中（${esc(a.attempt)}回目）</div>
+      <div class="muted">06 映像生成 — 経過 ${secs(a.elapsed_seconds)}
+        ${a.stale ? "／応答が長引いています" : ""}</div></div></div>`;
+  }
+  if (a.state === "waiting") {
+    return `<div class="now"><div class="spinner"></div><div>
+      <div class="big">${esc(a.number || "")} ${esc(a.title || "")} が完了</div>
+      <div class="muted">ターミナルでの承認待ちとみられます — 経過 ${secs(a.elapsed_seconds)}</div>
+      </div></div>`;
+  }
+  if (a.state === "completed") {
+    return `<div class="now stop"><div>
+      <div class="big">この run は完了しています</div>
+      <div class="muted">所要 ${secs(a.total_seconds)}／最終更新 ${clock(a.last_update_at)}</div>
+      </div></div>`;
+  }
+  // 停止（中断・失敗で止まっている）。増え続ける経過ではなく時刻を出す。
+  return `<div class="now stop"><div>
+    <div class="big">${a.phase
+      ? esc(a.number) + " " + esc(a.title) + " で停止しています"
+      : "未実行"}</div>
+    <div class="muted">${a.last_update_at
+      ? "最終更新 " + clock(a.last_update_at) + "／所要 " + secs(a.total_seconds)
+      : "run が選ばれていません"}</div>
+    </div></div>`;
+}
+
+// 素材のサムネイル。クリックで原寸を別タブに開く（目視確認用）。
+function thumb(asset, caption) {
+  if (!asset || !asset.preview_url) {
+    return `<div class="thumb muted">画像なし</div>`;
+  }
+  const title = esc(asset.title || asset.asset_id || "");
+  return `<a class="thumb" href="${esc(asset.preview_url)}" target="_blank"
+    title="${title}">
+    <img src="${esc(asset.preview_url)}" alt="" loading="lazy">
+    <span>${caption ? esc(caption) + " " : ""}${esc(asset.asset_id || "")}</span>
+  </a>`;
+}
+
+function renderOutput(phase) {
+  const out = phase.output;
+  if (!out) return `<p class="muted">この工程の出力は記録されていません。</p>`;
+  const parts = [];
+  const push = (label, html) => parts.push(`<h4>${esc(label)}</h4>${html}`);
+
+  // 工程ごとに読みやすい形へ。該当しないものは末尾でJSONとして出す。
+  if (Array.isArray(out.cuts)) {
+    push("カット構成", out.cuts.map((c) => `<div class="shot">
+      <div class="t">Cut ${esc(c.id)} ${esc(c.name || "")}
+        <span class="muted">${esc(c.seconds ?? "")}秒 / ${esc(c.time_of_day || "")}</span></div>
+      <div class="kv">${esc(c.scene || "")}</div>
+      ${c.narration ? `<div class="kv muted">ナレーション: ${esc(c.narration)}</div>` : ""}
+    </div>`).join(""));
+  }
+  if (Array.isArray(out.shots)) {
+    push("カットごとの演出", out.shots.map((s) => `<div class="shot">
+      <div class="t">Cut ${esc(s.id ?? s.cut_id)} ${esc(s.name || "")}
+        <span class="muted">${esc((s.asset || {}).asset_id
+          || (s.generation_mode === "text_to_video" ? "text_to_video" : ""))}</span></div>
+      <div class="pick">
+        ${s.asset ? thumb(s.asset, "") : `<div class="thumb muted">完全生成</div>`}
+        <div style="min-width:0">
+          ${s.camera_motion ? `<div class="kv"><b>カメラ:</b> ${esc(s.camera_motion)}</div>` : ""}
+          ${s.positive_prompt ? `<pre class="j">${esc(s.positive_prompt)}</pre>` : ""}
+          ${s.rationale ? `<div class="kv muted">${esc(s.rationale)}</div>` : ""}
+        </div>
+      </div>
+    </div>`).join(""));
+  }
+  if (Array.isArray(out.asset_assignments)) {
+    push("素材の選定", out.asset_assignments.map((a) => {
+      if (a._truncated) return `<div class="muted">ほか ${esc(a._truncated)} 件</div>`;
+      const p = a.primary || {};
+      const alts = (a.alternatives || []).filter((x) => x && x.asset_id);
+      return `<div class="shot">
+        <div class="t">Cut ${esc(a.cut_id)} — ${esc(p.title || p.asset_id || "")}
+          <code class="muted">${esc(p.asset_id || "")}</code></div>
+        <div class="pick">
+          ${thumb(p, "選定")}
+          ${alts.length ? `<div class="alts">
+            <p class="label">代替候補</p>
+            <div class="alt-row">${alts.map((x) => thumb(x, "")).join("")}</div>
+          </div>` : ""}
+        </div>
+        <div class="kv muted">${esc(p.selection_reason || p.reason || "")}</div>
+      </div>`;
+    }).join(""));
+  }
+  if (Array.isArray(out.requests)) {
+    push("生成リクエスト", out.requests.map((r) => `<div class="shot">
+      <div class="t">Cut ${esc(r.cut_id)}
+        <span class="muted">${esc(r.model || r.backend || "")}
+        ${esc(r.actual_seconds ?? r.requested_seconds ?? "")}秒</span></div>
+      <div class="kv muted">seed ${esc(r.seed ?? "—")}
+        ${r.generation_mode === "text_to_video" ? " / text_to_video" : ""}</div>
+    </div>`).join(""));
+  }
+
+  // 上で個別に描いたキーを除いた残りは、そのままJSONで見せる
+  const shown = new Set(["cuts", "shots", "asset_assignments", "requests"]);
+  const rest = Object.fromEntries(
+    Object.entries(out).filter(([k]) => !shown.has(k)));
+  if (Object.keys(rest).length) {
+    push("そのほかの出力", `<pre class="j">${esc(JSON.stringify(rest, null, 2))}</pre>`);
+  }
+  if (phase.feedback && phase.feedback.received) {
+    push("修正指示", `<pre class="j">${esc(phase.feedback.received)}</pre>`);
+  }
+  if ((phase.blocking_issues || []).length) {
+    push("未解決の問題",
+      `<div class="err-box">${phase.blocking_issues.map(esc).join("<br>")}</div>`);
+  }
+  return parts.join("");
+}
+
+function renderPhases(state) {
+  const rows = state.phases.map((p) => {
+    const isOpen = opened.has(p.id);
+    const canOpen = Boolean(p.output) || (p.blocking_issues || []).length;
+    const main = `<tr class="${esc(p.state || "pending")}">
+      <td class="num">${esc(p.number)}</td>
+      <td>${esc(p.title)}<br><span class="muted">${esc(p.summary || "")}</span></td>
+      <td class="num">${p.runs || "—"}</td>
+      <td class="num">${p.finished_at ? secs(p.elapsed_seconds) : "—"}</td>
+      <td>${badge(p.status)}</td>
+      <td>${canOpen ? `<button class="open" data-phase="${esc(p.id)}">
+        ${isOpen ? "閉じる" : "成果物を見る"}</button>` : ""}</td>
+    </tr>`;
+    const detail = isOpen
+      ? `<tr class="detail"><td colspan="6">
+           <div class="detail-body">${renderOutput(p)}</div></td></tr>`
+      : "";
+    return main + detail;
+  }).join("");
+  return `<div class="card"><h2>工程の進行</h2>
+    <table><thead><tr><th>#</th><th>工程</th><th>実行</th><th>所要</th>
+      <th>状態</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function renderCut(cut) {
+  const t2v = cut.generation_mode === "text_to_video";
+  const left = cut.source_url
+    ? `<img src="${esc(cut.source_url)}" alt="">`
+    : `<div class="muted">${t2v ? "完全生成（元画像なし）" : "元画像なし"}</div>`;
+  const right = cut.clip_url
+    ? `<video src="${esc(cut.clip_url)}" controls preload="metadata"></video>`
+    : `<div class="muted">生成待ち</div>`;
+  const verdict = cut.verdict
+    ? badge(cut.verdict === "pass" ? "success" : "error")
+    : `<span class="badge run">生成中</span>`;
+  const issues = (cut.issues || []).filter(Boolean);
+  return `<div class="cut">
+    <h3>Cut ${esc(cut.cut_id)} ${verdict}
+      <span class="muted">${esc(cut.model || "")} ${cut.seconds ? esc(cut.seconds) + "秒" : ""}</span></h3>
+    <div class="media">
+      <div><p class="label">${t2v ? "入力（なし）" : "元画像"}</p>${left}</div>
+      <div><p class="label">生成された映像</p>${right}</div>
+    </div>
+    ${cut.camera_motion ? `<p class="label">カメラワーク</p>
+      <div style="font-size:12px">${esc(cut.camera_motion)}</div>` : ""}
+    ${cut.prompt ? `<p class="label">生成プロンプト</p>
+      <pre class="prompt">${esc(cut.prompt)}</pre>` : ""}
+    <p class="label">生成条件</p>
+    <div class="muted">seed ${esc(cut.seed ?? "—")} / 試行 ${esc(cut.attempt ?? 1)}回目
+      ${t2v ? " / text_to_video" : ""}</div>
+    ${issues.length ? `<p class="label">検出された問題</p>
+      <div class="err-box">${issues.map(esc).join("<br>")}</div>` : ""}
+    ${cut.error ? `<p class="label">生成エラー</p>
+      <div class="err-box">${esc(cut.error)}</div>` : ""}
+  </div>`;
+}
+
+function render(state) {
+  const root = document.getElementById("root");
+  if (!state.found) {
+    root.innerHTML = `<div class="card"><p class="muted">
+      run が見つかりません。パイプラインを実行すると表示されます。</p></div>`;
+    return;
+  }
+  const done = state.phases.filter((p) => p.finished_at).length;
+  const activity = state.activity || {};
+  const stateLabel = {
+    generating: "生成中", waiting: "承認待ち",
+    completed: "完了", idle: "停止",
+  };
+  // 動いているときだけ経過を刻む。止まった run では時刻と総所要を出す。
+  const live = activity.state === "generating" || activity.state === "waiting";
+  const kpis = [
+    ["進行", `${done} / ${state.phases.length} 工程`],
+    ["現在の状態", stateLabel[activity.state] || "—"],
+    live
+      ? ["経過", secs(activity.elapsed_seconds)]
+      : ["総所要", secs(activity.total_seconds)],
+    ["動画生成の実課金", "$" + (state.cost.spent_usd || 0).toFixed(2)],
+  ].map(([k, v]) => `<div class="kpi"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join("");
+
+  const finalVideo = state.final_video_url
+    ? `<div class="card"><h2>最終動画</h2>
+       <video src="${esc(state.final_video_url)}" controls
+              style="width:100%;max-width:640px;border-radius:9px;background:#000"></video></div>`
+    : "";
+
+  root.innerHTML = `<div class="card"><h2>${esc(state.run_id)}</h2>
+      ${renderNow(state)}
+      <div class="kpis">${kpis}</div></div>
+    ${renderPhases(state)}
+    ${state.cuts.length ? `<div class="card"><h2>カット</h2>
+      <div class="cuts">${state.cuts.map(renderCut).join("")}</div></div>` : ""}
+    ${finalVideo}`;
+}
+
+async function tick() {
+  const statusEl = document.getElementById("status");
+  try {
+    const runsRes = await fetch("/api/runs");
+    const { runs } = await runsRes.json();
+    const select = document.getElementById("runs");
+    const signature = runs.map((r) => r.run_id).join(",");
+    if (select.dataset.signature !== signature) {
+      select.dataset.signature = signature;
+      select.innerHTML = runs
+        .map((r) => `<option value="${esc(r.run_id)}">${esc(r.run_id)}</option>`).join("");
+      if (selectedRun) select.value = selectedRun;
+    }
+    selectedRun = select.value || (runs[0] && runs[0].run_id) || "";
+
+    const res = await fetch("/api/state?run=" + encodeURIComponent(selectedRun));
+    const state = await res.json();
+    // 内容が変わったときだけ描き直す（動画の再生位置を巻き戻さないため）
+    const signature2 = JSON.stringify(state);
+    if (signature2 !== lastSignature) {
+      lastSignature = signature2;
+      render(state);
+    }
+    const st = (state.activity || {}).state;
+    const live = st === "generating" || st === "waiting";
+    const label = { generating: "実行中", waiting: "承認待ち",
+                    completed: "完了", idle: "停止" }[st] || "—";
+    statusEl.innerHTML =
+      `<span class="dot ${live ? "live" : "idle"}"></span>${label}` +
+      `（${new Date().toLocaleTimeString()} 時点）`;
+  } catch (e) {
+    statusEl.innerHTML = `<span class="dot idle"></span>サーバに接続できません`;
+  }
+}
+
+document.getElementById("runs").addEventListener("change", (e) => {
+  selectedRun = e.target.value;
+  opened.clear();
+  lastSignature = "";
+  tick();
+});
+
+// 「成果物を見る」の開閉。表全体を作り直すので、委譲で受ける。
+document.getElementById("root").addEventListener("click", (e) => {
+  const button = e.target.closest("button.open");
+  if (!button) return;
+  const phase = button.dataset.phase;
+  if (opened.has(phase)) opened.delete(phase);
+  else opened.add(phase);
+  lastSignature = "";      // 開閉を即座に反映させる
+  tick();
+});
+tick();
+setInterval(tick, POLL_MS);
+</script>
+</body>
+</html>
