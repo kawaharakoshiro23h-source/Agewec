@@ -247,6 +247,15 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         target_cut_id = int(target_cut_id)
 
     existing = dict(state.get("production_requests", {}))
+    # target_cut_id は「前回の完全な結果があるときだけ」差分更新に使える。
+    # Directorで1カットだけ差し戻すとその値がここまで引き継がれるが、
+    # この工程が初回実行なら土台が無く、絞り込むと残りが未作成のまま落ちる
+    # （run-d35ee139e1: Cut8のみ作られ、Cut1〜7が欠落）。
+    covered = {int(cut_id) for cut_id in existing}
+    if target_cut_id is not None and not covered.issuperset(
+        {int(shot["id"]) for shot in shots}
+    ):
+        target_cut_id = None
     if target_cut_id is None:
         existing = {}
     else:

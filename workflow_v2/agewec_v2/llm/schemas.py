@@ -141,7 +141,10 @@ class DirectionShot(BaseModel):
     positive_prompt: str
     negative_prompt: str = ""
     camera_motion: str
-    motion_intensity: Literal["subtle", "moderate", "strong"]
+    # `static` はカメラも被写体も動かさないカット。静止画から動画を作る際は
+    # 最も破綻しにくい選択で、実際に多用される。これが無いと、人間が
+    # 「カメラは固定で」と指示したカットをDirectorが表現できず、検証で落ちる。
+    motion_intensity: Literal["static", "subtle", "moderate", "strong"]
     rationale: str
     camera_intent_alignment: str
     deviation_reason: str | None = None

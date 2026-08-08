@@ -66,6 +66,49 @@ class SchemaTest(unittest.TestCase):
                 "model": "  ",
             })
 
+    def test_static_is_a_valid_motion_intensity(self) -> None:
+        """「カメラは固定」を表現できること。
+
+        static が無かったため、人間が「固定で」と指示したカットで
+        Directorが static を返し、検証に3回連続で失敗して実行が停止した
+        （run-fc15a3798d）。静止画からの生成では最も多用する値。
+        """
+        for value in ("static", "subtle", "moderate", "strong"):
+            with self.subTest(value=value):
+                shot = DirectionShot(**{
+                    **_shot(1, "image_to_video", asset_id="asset-001"),
+                    "motion_intensity": value,
+                })
+                self.assertEqual(shot.motion_intensity, value)
+
+    def test_unknown_motion_intensity_is_still_rejected(self) -> None:
+        for value in ("medium", "none", "強い", ""):
+            with self.subTest(value=value):
+                with self.assertRaises(pydantic.ValidationError):
+                    DirectionShot(**{
+                        **_shot(1, "image_to_video", asset_id="asset-001"),
+                        "motion_intensity": value,
+                    })
+
+    def test_the_prompt_lists_exactly_the_allowed_values(self) -> None:
+        """MDとスキーマがずれていないこと。
+
+        ずれると、Directorが存在しない値を返して実行が止まる。
+        """
+        import typing
+        from pathlib import Path
+        allowed = set(
+            typing.get_args(
+                DirectionShot.model_fields["motion_intensity"].annotation
+            )
+        )
+        md = (
+            Path(__file__).resolve().parents[1]
+            / "agewec_v2" / "prompts" / "director.md"
+        ).read_text(encoding="utf-8")
+        for value in allowed:
+            self.assertIn(f"`{value}`", md, f"{value} がdirector.mdに無い")
+
     def test_image_to_video_requires_asset(self) -> None:
         with self.assertRaises(pydantic.ValidationError):
             DirectionShot(**_shot(1, "image_to_video", asset_id=None))

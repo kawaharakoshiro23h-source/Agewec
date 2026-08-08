@@ -264,6 +264,86 @@ class ExplicitAssetChoiceTest(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("target_cut_id", " ".join(result["blocking_issues"]))
 
+    # --- カット単位の一括指定 --------------------------------------------
+
+    def test_assigns_every_cut_named_in_one_instruction(self) -> None:
+        """1回の指示で複数カットを指定できること。
+
+        以前は re.search で最初の1件しか読まず、残りは警告もなく
+        捨てられていた。8カット書いても1カットしか反映されない。
+        """
+        state = self._state(
+            "Cut1:Asset-001, Cut2 : Asset-017を使ってください。"
+        )
+        state["review_context"]["asset_curator"] = {}
+        state["phase_results"]["writer_storyboard"]["data"]["cuts"] = [
+            dict(CUT), {**CUT, "id": 2, "name": "2番目"},
+        ]
+        result = nodes_llm.asset_curator(state)["phase_results"]["asset_curator"]
+        self.assertEqual(result["status"], "success", result.get("blocking_issues"))
+        chosen = {
+            a["cut_id"]: a["primary"]["asset_id"]
+            for a in result["data"]["asset_assignments"]
+        }
+        self.assertEqual(chosen, {1: "asset-001", 2: "asset-017"})
+
+    def test_bulk_assignment_needs_no_target_cut_id(self) -> None:
+        """カット番号が文中にあるので、対象カットIDの入力は不要。"""
+        state = self._state("Cut1:Asset-017")
+        state["review_context"]["asset_curator"] = {}
+        result = nodes_llm.asset_curator(state)["phase_results"]["asset_curator"]
+        self.assertEqual(result["status"], "success", result.get("blocking_issues"))
+
+    def test_rejects_a_cut_number_that_does_not_exist(self) -> None:
+        """絵コンテにないカット番号は、黙って捨てずに知らせる。"""
+        state = self._state("Cut1:Asset-001, Cut9:Asset-017")
+        state["review_context"]["asset_curator"] = {}
+        result = nodes_llm.asset_curator(state)["phase_results"]["asset_curator"]
+        self.assertEqual(result["status"], "error")
+        self.assertIn("9", " ".join(result["blocking_issues"]))
+
+    def test_records_the_bulk_assignment_for_the_trail(self) -> None:
+        state = self._state("Cut1:Asset-017")
+        state["review_context"]["asset_curator"] = {}
+        result = nodes_llm.asset_curator(state)["phase_results"]["asset_curator"]
+        self.assertEqual(
+            result["data"]["requested_asset_map"], {"1": "asset-017"}
+        )
+
+    def test_parses_the_exact_wording_a_human_typed(self) -> None:
+        """利用者が実際に打った文字列がそのまま通ること。
+
+        全角コロン・空白の揺れ・末尾の日本語を含む生の入力で検証する。
+        """
+        typed = (
+            "Cut1:Asset-009, Cut2:Asset-076, Cut3 : Asset-041, "
+            "Cut4 : Asset-003, Cut5 : Asset-018, Cut6 ：Asset-010, "
+            "Cut7 : Asset-020, Cut8:Asset-006を使ってください。"
+        )
+        parsed = nodes_llm._requested_asset_map(typed)
+        self.assertEqual(
+            parsed,
+            {
+                1: "asset-009", 2: "asset-076", 3: "asset-041",
+                4: "asset-003", 5: "asset-018", 6: "asset-010",
+                7: "asset-020", 8: "asset-006",
+            },
+        )
+
+    def test_a_later_line_overrides_an_earlier_one(self) -> None:
+        """同じカットを書き直したら、後のほうを採用する。"""
+        parsed = nodes_llm._requested_asset_map(
+            "Cut1:Asset-001\nやっぱり Cut1:Asset-017"
+        )
+        self.assertEqual(parsed, {1: "asset-017"})
+
+    def test_single_asset_wording_still_works(self) -> None:
+        """従来の「asset-XXXを使って」＋対象カットIDも壊さない。"""
+        result = self._run("asset-017の写真を利用してほしい")
+        self.assertEqual(result["status"], "success", result.get("blocking_issues"))
+        primary = result["data"]["asset_assignments"][0]["primary"]
+        self.assertEqual(primary["asset_id"], "asset-017")
+
     # --- 既存動作の維持 --------------------------------------------------
 
     def test_without_feedback_the_ranker_still_decides(self) -> None:

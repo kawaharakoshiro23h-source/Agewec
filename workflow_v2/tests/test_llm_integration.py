@@ -251,6 +251,10 @@ class LLMIntegrationTest(unittest.TestCase):
         }
         config["production"]["backend"] = "mock"
         config["production"]["max_video_cuts_per_run"] = 2
+        # このテストは「全ロールがLLM経由で動くこと」を見るものなので、
+        # 同梱configの固定絵コンテは無効にする（有効だとwriter_storyboardが
+        # LLMを呼ばないのが正しい挙動になり、検証の対象がずれる）。
+        config.setdefault("storyboard", {})["fixed_cuts"] = []
         config["review_board"]["mode"] = "ai"
         config["final_submission"]["require_human"] = False
         config["autonomy_preset"] = "custom"

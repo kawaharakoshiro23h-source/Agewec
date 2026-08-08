@@ -453,6 +453,95 @@ def _rescale_cut_durations(
     }
 
 
+_FIXED_CUT_DEFAULTS = {
+    "media_requirement": "video_required",
+    "time_of_day": "night",
+    "visual_role": "development",
+    "location": "北九州市",
+    "subject": "夜景",
+    "narration": "",
+}
+
+
+def _fixed_storyboard_cuts(
+    state: WorkflowState,
+) -> list[dict[str, Any]] | None:
+    """Return a human-authored storyboard from config, if one is present.
+
+    `storyboard.fixed_cuts` が空・未設定なら None を返し、従来どおり
+    LLMに書かせる。既存の設定を壊さないための既定である。
+    """
+    raw = (
+        state.get("config", {})
+        .get("storyboard", {})
+        .get("fixed_cuts")
+    )
+    if not raw:
+        return None
+    cuts: list[dict[str, Any]] = []
+    for index, item in enumerate(raw, start=1):
+        cut = {**_FIXED_CUT_DEFAULTS, **dict(item)}
+        cut["id"] = int(cut.get("id", index))
+        cut["seconds"] = float(cut["seconds"])
+        cut["name"] = str(cut["name"])
+        cut["scene"] = str(cut["scene"])
+        cut["narration"] = str(cut.get("narration") or "")
+        cuts.append(cut)
+    cuts.sort(key=lambda c: c["id"])
+    ids = [c["id"] for c in cuts]
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"storyboard.fixed_cuts のidが重複しています: {ids}")
+    if any(c["seconds"] <= 0 for c in cuts):
+        raise ValueError("storyboard.fixed_cuts の seconds は正の数にしてください")
+    return cuts
+
+
+def _complete_fixed_storyboard(
+    state: WorkflowState,
+    cuts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Use the configured storyboard verbatim, without calling the LLM.
+
+    尺の再スケールも行わない。人間が書いた秒数をそのまま使う
+    （合計が目標尺と違う場合は警告として残し、判断は人間に委ねる）。
+    """
+    total = round(sum(float(c["seconds"]) for c in cuts), 3)
+    target = float(
+        _approved_project_brief(state).get("target_duration_seconds", total)
+    )
+    warnings: list[str] = []
+    if abs(total - target) > 1e-6:
+        warnings.append(
+            f"固定絵コンテの合計{total:g}秒が目標尺{target:g}秒と一致しません"
+            "（configの seconds をそのまま使用します）"
+        )
+    max_cuts_value = (
+        state.get("config", {})
+        .get("production", {})
+        .get("max_video_cuts_per_run")
+    )
+    if max_cuts_value is not None and len(cuts) > int(max_cuts_value):
+        warnings.append(
+            f"固定絵コンテは{len(cuts)}カットですが "
+            f"max_video_cuts_per_run は {int(max_cuts_value)} です。"
+            "間引かずに全カットを使用します"
+        )
+    return deterministic._complete(
+        state,
+        "writer_storyboard",
+        summary=f"設定済みの絵コンテを採用（{len(cuts)}カット、{total:g}秒）",
+        data={
+            "total_seconds": total,
+            "cuts": cuts,
+            "source": "config.storyboard.fixed_cuts",
+            "duration_adjustment": {"applied": False, "reason": "人間が指定した尺"},
+            "cut_limit": {"applied": False, "configured_max_cuts": max_cuts_value},
+        },
+        confidence=1.0,
+        warnings=warnings,
+    )
+
+
 def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
     brief = _approved_project_brief(state)
     concept = _result_data(state, "creative_director")
@@ -473,6 +562,13 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
         .get("max_video_cuts_per_run")
     )
     max_cuts = int(max_cuts_value) if max_cuts_value is not None else None
+
+    # 使う写真が先に決まっている制作では、絵コンテをLLMに書かせる意味がない。
+    # 毎回抽象的な内容が出て、毎回人間が差し戻すことになるため、
+    # config に書いた内容をそのまま採用できるようにする。
+    fixed = _fixed_storyboard_cuts(state)
+    if fixed is not None:
+        return _complete_fixed_storyboard(state, fixed)
 
     def transform(data: dict[str, Any]) -> dict[str, Any]:
         target = float(brief.get("target_duration_seconds", 30))
@@ -1008,6 +1104,33 @@ def _requested_asset_id(feedback: str) -> str | None:
     return _canonical_asset_id(match.group(0)) if match else None
 
 
+# 「Cut1:Asset-009, Cut2:Asset-076, ...」のようなカット単位の一括指定。
+# 全角コロン・空白・アンダースコアの揺れを吸収する。
+_CUT_ASSET_PATTERN = re.compile(
+    r"cut\s*(\d+)\s*[:：]?\s*asset[-\s_]*(\d+)",
+    flags=re.IGNORECASE,
+)
+
+
+def _requested_asset_map(feedback: str) -> dict[int, str]:
+    """Parse a per-cut asset assignment written by a human.
+
+    `_requested_asset_id` は re.search なので最初の1件しか拾えない。
+    8カット分を書いても7件が黙って捨てられていたため、カット番号と
+    素材IDの対を全て取り出せるようにする。
+
+    同じカットが複数回書かれた場合は、後に書かれたほうを採用する
+    （書き直しは後から上書きするのが自然なため）。
+    """
+    assignments: dict[int, str] = {}
+    for cut_text, asset_text in _CUT_ASSET_PATTERN.findall(feedback):
+        cut_id = int(cut_text)
+        if cut_id < 1:
+            continue
+        assignments[cut_id] = _canonical_asset_id(f"asset-{asset_text}")
+    return assignments
+
+
 def asset_curator(state: WorkflowState) -> dict[str, Any]:
     phase = "asset_curator"
     storyboard = _result_data(state, "writer_storyboard")
@@ -1051,9 +1174,13 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
             blocking_issues=[f"Unknown target_cut_id: {target_cut_id}"],
         )
 
+    feedback = _feedback(state, phase)
+    # 一括指定が一部のカットだけを指す場合、指定外のカットは前回の選定を残す。
+    # ここで前回結果を読まないと、指定外のカットが未割当のまま落ちる。
+    _bulk_requested = bool(_requested_asset_map(feedback))
     existing_items = (
         _result_data(state, phase).get("asset_assignments", [])
-        if target_cut_id is not None
+        if (target_cut_id is not None or _bulk_requested)
         else []
     )
     merged = {
@@ -1061,8 +1188,30 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
         for item in existing_items
         if int(item["cut_id"]) in valid_cut_ids
     }
-    feedback = _feedback(state, phase)
-    requested_id = _requested_asset_id(feedback)
+    # 「Cut1:Asset-009, Cut2:Asset-076, ...」形式の一括指定を先に見る。
+    # カット番号が文中にあるため、対象カットIDの指定は不要。
+    requested_map = _requested_asset_map(feedback)
+    unknown_cut_ids = sorted(set(requested_map) - valid_cut_ids)
+    if unknown_cut_ids:
+        return deterministic._complete(
+            state,
+            phase,
+            summary="存在しないカット番号が指定されています",
+            data={
+                "selection_mode": "deterministic_ranker",
+                "requested_asset_map": {
+                    str(key): value for key, value in requested_map.items()
+                },
+            },
+            status="error",
+            confidence=0.0,
+            blocking_issues=[
+                "絵コンテにないカット番号: "
+                + ", ".join(map(str, unknown_cut_ids))
+                + f"（有効なカット: {', '.join(map(str, sorted(valid_cut_ids)))}）"
+            ],
+        )
+    requested_id = None if requested_map else _requested_asset_id(feedback)
     if requested_id and target_cut_id is None:
         return deterministic._complete(
             state,
@@ -1088,11 +1237,20 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
         for cut_id, item in merged.items()
         if cut_id != target_cut_id
     }
-    selection_cut_ids = (
-        [target_cut_id]
-        if target_cut_id is not None
-        else sorted(valid_cut_ids)
-    )
+    if requested_map:
+        # 指定されたカットは必ず割り当て直す。あわせて、まだ選定されていない
+        # カット（初回実行など）も埋める。既に選定済みで指定外のカットは
+        # 触らない——黙って別の素材に変わるのを防ぐため。
+        needed = (valid_cut_ids - set(merged)) | set(requested_map)
+        if target_cut_id is not None:
+            needed.add(target_cut_id)
+        selection_cut_ids = sorted(needed)
+    else:
+        selection_cut_ids = (
+            [target_cut_id]
+            if target_cut_id is not None
+            else sorted(valid_cut_ids)
+        )
     new_assignments: dict[int, dict[str, Any]] = {}
     blocking: list[str] = []
     warnings: list[str] = []
@@ -1116,9 +1274,10 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
                 "",
             )
         )
-        if requested_id:
+        cut_requested_id = requested_map.get(cut_id) or requested_id
+        if cut_requested_id:
             requested, rejection, warning = _resolve_requested_asset(
-                requested_id,
+                cut_requested_id,
                 cut,
                 ranked,
                 all_candidates,
@@ -1317,6 +1476,10 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
         "selection_mode": "deterministic_ranker_with_llm_rationale",
         "targeted_revision_cut_id": target_cut_id,
         "requested_asset_id": requested_id,
+        # 人間がカット単位で名指しした内容。後から誰が決めたかを追えるよう残す。
+        "requested_asset_map": {
+            str(key): value for key, value in sorted(requested_map.items())
+        },
         "rationale_fallback_used": bool(
             rationale_metadata.get("fallback")
         ),
