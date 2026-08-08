@@ -7,9 +7,9 @@ from pathlib import Path
 import yaml
 
 from .backends.comfy_runtime import ComfyClient
+from .paths import WORKFLOW_ROOT
 
-
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = WORKFLOW_ROOT
 
 
 def main() -> None:

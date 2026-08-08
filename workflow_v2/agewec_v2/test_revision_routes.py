@@ -40,8 +40,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from .graph_safe import build_graph
+from .paths import WORKFLOW_ROOT
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = WORKFLOW_ROOT
 
 ROUTES = {
     "d": ("director", "演出・プロンプトを修正"),

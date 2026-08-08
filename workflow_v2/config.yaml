@@ -188,5 +188,9 @@ runway:
 
 paths:
   work_dir: work
+  runs_dir: runs
+  checkpoint_db: work/checkpoints.sqlite
   provenance_file: work/provenance.json
   submissions_dir: submissions
+  assets_dir: assets_dl
+  asset_catalog: asset_catalog.json

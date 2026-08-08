@@ -22,11 +22,8 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from .backends import ComfyClient, ComfyGenerationRequest
+from .paths import PROJECT_ROOT, WORKFLOW_ROOT, runtime_paths
 from .state import WorkflowState
-
-
-WORKFLOW_ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = WORKFLOW_ROOT.parent
 
 AWARD_GENRES = {
     "夜景賞": "イルミネーション・夜景",
@@ -45,15 +42,11 @@ def _work_path(state: WorkflowState, *parts: str) -> Path:
     複数モデルを比較する際も、成果物が互いに潰し合わない。
     run_id が無い場合（単体テスト等）は従来どおり work/ 直下を使う。
     """
-    paths = state.get("config", {}).get("paths", {})
-    relative = paths.get("work_dir", "work")
-    path = WORKFLOW_ROOT / relative
     run_id = str(state.get("run_id") or "")
-    if run_id:
-        path = path / paths.get("runs_dir", "runs") / run_id
-    for part in parts:
-        path /= part
-    return path
+    return runtime_paths(state.get("config", {})).work_path(
+        run_id or None,
+        *parts,
+    )
 
 
 def _cut_path(state: WorkflowState, cut_id: int, *parts: str) -> Path:
@@ -388,8 +381,8 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
     )
 
 
-def _load_catalog() -> dict[str, Any]:
-    path = PROJECT_ROOT / "asset_catalog.json"
+def _load_catalog(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    path = runtime_paths(config).asset_catalog
     if not path.exists():
         return {}
     try:
@@ -398,17 +391,21 @@ def _load_catalog() -> dict[str, Any]:
         return {}
 
 
-def _local_asset_path(photo: dict[str, Any]) -> str | None:
+def _local_asset_path(
+    photo: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> str | None:
+    layout = runtime_paths(config)
     # 1) カタログに local_path があればそれを優先（新命名 asset-XXX_... に対応）
     rel = photo.get("local_path")
     if rel:
-        candidate = PROJECT_ROOT / rel
+        candidate = layout.resolve_project(rel)
         if candidate.exists():
             return str(candidate)
     # 2) 後方互換: image_url のファイル名から推測（旧カタログ用）
     image_url = photo.get("image_url", "")
     name = unquote(Path(urlparse(image_url).path).name)
-    candidate = PROJECT_ROOT / "assets_dl" / name
+    candidate = layout.assets_root / name
     return str(candidate) if name and candidate.exists() else None
 
 
@@ -420,10 +417,11 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
         .get("data", {})
         .get("cuts", [])
     )
-    catalog = _load_catalog()
+    config = state.get("config", {})
+    catalog = _load_catalog(config)
     candidates = []
     for index, photo in enumerate(catalog.get("photos", []), start=1):
-        local_path = _local_asset_path(photo)
+        local_path = _local_asset_path(photo, config)
         candidates.append(
             {
                 "asset_id": f"asset-{index:03d}",
@@ -636,8 +634,8 @@ def _comfy_production(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     config = state.get("config", {})
     comfy = config.get("comfy", {})
-    workflow_path = WORKFLOW_ROOT / comfy.get(
-        "workflow_api_json", "workflows/ltx_i2v_api.json"
+    workflow_path = runtime_paths(config).resolve_workflow(
+        comfy.get("workflow_api_json", "workflows/ltx_i2v_api.json")
     )
     client = ComfyClient(
         base_url=comfy.get("base_url", "http://127.0.0.1:8188"),
@@ -912,10 +910,7 @@ def _sanitized(value: Any) -> Any:
 
 def provenance(state: WorkflowState) -> dict[str, Any]:
     phase = "provenance"
-    configured = state.get("config", {}).get("paths", {}).get(
-        "provenance_file", "work/provenance.json"
-    )
-    path = WORKFLOW_ROOT / configured
+    path = runtime_paths(state.get("config", {})).provenance_file
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "run_id": state.get("run_id"),

@@ -48,6 +48,11 @@ from .media_tools import (
     normalize_video_clip,
     probe_media,
 )
+from .paths import runtime_paths
+from .phase_contracts import (
+    effective_target_cut_id,
+    preserves_existing_artifact,
+)
 from .state import WorkflowState
 from .state_safe import SafeWorkflowState
 
@@ -243,19 +248,16 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         context.get("target_cut_id")
         or direction.get("targeted_revision_cut_id")
     )
-    if target_cut_id is not None:
-        target_cut_id = int(target_cut_id)
-
     existing = dict(state.get("production_requests", {}))
     # target_cut_id は「前回の完全な結果があるときだけ」差分更新に使える。
     # Directorで1カットだけ差し戻すとその値がここまで引き継がれるが、
     # この工程が初回実行なら土台が無く、絞り込むと残りが未作成のまま落ちる
     # （run-d35ee139e1: Cut8のみ作られ、Cut1〜7が欠落）。
-    covered = {int(cut_id) for cut_id in existing}
-    if target_cut_id is not None and not covered.issuperset(
-        {int(shot["id"]) for shot in shots}
-    ):
-        target_cut_id = None
+    target_cut_id = effective_target_cut_id(
+        int(target_cut_id) if target_cut_id is not None else None,
+        shots,
+        existing,
+    )
     if target_cut_id is None:
         existing = {}
     else:
@@ -481,8 +483,8 @@ def _generate_comfy(
     config = state.get("config", {})
     comfy = dict(config.get("comfy", {}))
     comfy.update(config.get("production", {}).get("comfy", {}))
-    workflow_path = deterministic.WORKFLOW_ROOT / str(
-        comfy.get("workflow_api_json", "workflows/ltx_i2v_api.json")
+    workflow_path = runtime_paths(config).resolve_workflow(
+        str(comfy.get("workflow_api_json", "workflows/ltx_i2v_api.json"))
     )
     client = ComfyClient(
         base_url=str(comfy.get("base_url", "http://127.0.0.1:8188")),
@@ -1445,7 +1447,7 @@ def commit_cut_qa(state: SafeWorkflowState) -> dict[str, Any]:
                 "target_cut_id": current,
                 "correction_type": "asset",
             }
-        if route != "image_video_production":
+        if not preserves_existing_artifact(route):
             artifacts.pop(str(current), None)
 
     events = list(state.get("events", []))
@@ -2580,7 +2582,10 @@ def _portable_path(value: Any) -> str:
     text = str(value)
     if not text:
         return text
-    for root in (deterministic.WORKFLOW_ROOT.parent, Path.home()):
+    for root in (
+        runtime_paths().project_root,
+        Path.home(),
+    ):
         text = text.replace(str(root) + "/", "").replace(str(root), ".")
     return _HOME_PATTERN.sub("~/", text)
 
@@ -3302,12 +3307,7 @@ def provenance_package(state: WorkflowState) -> dict[str, Any]:
                 "final_outputが実在する動画ファイルではない"
             ],
         )
-    configured = (
-        state.get("config", {})
-        .get("paths", {})
-        .get("submissions_dir", "submissions")
-    )
-    package = deterministic.WORKFLOW_ROOT / configured / run_id
+    package = runtime_paths(state.get("config", {})).submissions_root / run_id
     package.mkdir(parents=True, exist_ok=True)
     final_video = package / "final_video.mp4"
     if source_video.resolve() != final_video.resolve():

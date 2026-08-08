@@ -19,6 +19,7 @@ from .checkpointing import (
     open_sqlite_checkpointer,
 )
 from .graph_safe import build_graph
+from .paths import WORKFLOW_ROOT, RuntimePaths, runtime_paths
 from .review_display import (
     changed_field_labels,
     feedback_status_label,
@@ -27,8 +28,8 @@ from .review_display import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHECKPOINT_DB = ROOT / "work" / "checkpoints.sqlite"
+ROOT = WORKFLOW_ROOT
+DEFAULT_CHECKPOINT_DB = runtime_paths().checkpoint_db
 
 
 def _resume_command(run_id: str, checkpoint_db: Path) -> str:
@@ -47,17 +48,11 @@ def _gate_snapshot_path(payload: dict[str, Any]) -> Path | None:
     if not run_id or not phase:
         return None
     paths = payload.get("paths") or {}
-    work_dir = Path(str(paths.get("work_dir", "work")))
-    if not work_dir.is_absolute():
-        work_dir = ROOT / work_dir
-    runs_dir = str(paths.get("runs_dir", "runs"))
     attempt = int(payload.get("attempt") or 1)
-    return (
-        work_dir
-        / runs_dir
-        / run_id
-        / "gates"
-        / f"{phase}_attempt_{attempt:02d}.json"
+    return RuntimePaths.from_config({"paths": paths}).work_path(
+        run_id,
+        "gates",
+        f"{phase}_attempt_{attempt:02d}.json",
     )
 
 
@@ -341,7 +336,7 @@ def main() -> None:
 
     checkpoint_db = args.checkpoint_db
     if not checkpoint_db.is_absolute():
-        checkpoint_db = ROOT / checkpoint_db
+        checkpoint_db = runtime_paths().resolve_workflow(checkpoint_db)
     checkpoint_db = checkpoint_db.resolve()
     run_id = args.resume or f"run-{uuid.uuid4().hex[:10]}"
     thread = {"configurable": {"thread_id": run_id}}

@@ -700,13 +700,14 @@ def writer_storyboard(state: WorkflowState) -> dict[str, Any]:
 def _asset_candidates(state: WorkflowState) -> list[dict[str, Any]]:
     award = _approved_project_value(state, "target_award", "夜景賞")
     target_genre = deterministic.AWARD_GENRES.get(award)
-    catalog = deterministic._load_catalog()
+    config = state.get("config", {})
+    catalog = deterministic._load_catalog(config)
     photos = catalog.get("photos", [])
     candidates = []
     for index, photo in enumerate(photos, start=1):
         title = str(photo.get("title", ""))
         genres = list(photo.get("genres", []))
-        local_path = deterministic._local_asset_path(photo)
+        local_path = deterministic._local_asset_path(photo, config)
         file_size = None
         sha256 = None
         acquired_at = None
@@ -1465,7 +1466,9 @@ def asset_curator(state: WorkflowState) -> dict[str, Any]:
         for assignment in assignments
     ]
     data = {
-        "catalog_source": deterministic._load_catalog().get("source"),
+        "catalog_source": deterministic._load_catalog(
+            state.get("config", {})
+        ).get("source"),
         "available_candidate_count": len(candidates),
         "asset_assignments": assignments,
         "selected_assets": selected_assets,

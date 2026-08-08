@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ..nodes import WORKFLOW_ROOT
+from ..paths import runtime_paths
 from .server import serve
 
 
@@ -21,13 +21,13 @@ def main() -> None:
     parser.add_argument(
         "--runs-root",
         type=Path,
-        default=WORKFLOW_ROOT / "work" / "runs",
+        default=runtime_paths().runs_root,
         help="run が並ぶディレクトリ（既定: work/runs）",
     )
     parser.add_argument(
         "--assets-root",
         type=Path,
-        default=WORKFLOW_ROOT.parent / "assets_dl",
+        default=runtime_paths().assets_root,
         help="素材写真の置き場（既定: assets_dl）。選定素材のサムネイル用",
     )
     parser.add_argument("--host", default="127.0.0.1")

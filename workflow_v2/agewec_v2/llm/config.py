@@ -6,9 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
-WORKFLOW_ROOT = Path(__file__).resolve().parents[2]
-PROJECT_ROOT = WORKFLOW_ROOT.parent
+from ..paths import PROJECT_ROOT, WORKFLOW_ROOT, runtime_paths
 
 
 def load_project_dotenv() -> None:
@@ -111,9 +109,9 @@ class LLMSettings:
                 )
             ),
         )
-        ledger_path = Path(ledger_value).expanduser()
-        if not ledger_path.is_absolute():
-            ledger_path = WORKFLOW_ROOT / ledger_path
+        ledger_path = runtime_paths(workflow_config).resolve_workflow(
+            ledger_value
+        )
         settings = cls(
             enabled=enabled,
             provider=provider,

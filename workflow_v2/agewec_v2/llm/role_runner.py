@@ -8,12 +8,13 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from .config import LLMSettings, WORKFLOW_ROOT
+from ..paths import PACKAGE_ROOT
+from .config import LLMSettings
 from .provider import OpenAICompatibleProvider, ProviderResponse
 from .schemas import ROLE_SCHEMAS
 
 
-PROMPT_ROOT = WORKFLOW_ROOT / "agewec_v2" / "prompts"
+PROMPT_ROOT = PACKAGE_ROOT / "prompts"
 
 # --- 出力言語ポリシー（全ロール共通）-----------------------------------------
 # 既定は日本語。ただし2種類の例外がある。

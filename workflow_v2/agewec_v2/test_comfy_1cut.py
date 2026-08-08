@@ -30,9 +30,10 @@ import yaml
 
 from . import nodes as det
 from .backends.comfy_runtime import ComfyClient, ComfyGenerationRequest
+from .paths import WORKFLOW_ROOT
 from .pipeline_runtime import _ltx_frame_count
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = WORKFLOW_ROOT
 
 SAMPLE_PROMPT = (
     "Cinematic footage of a real Kitakyushu night cityscape. Preserve the real "

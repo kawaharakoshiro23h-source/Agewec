@@ -28,10 +28,10 @@ from langgraph.graph import END, START, StateGraph
 from . import nodes_runtime as runtime
 from .backends.comfy_runtime import ComfyClient
 from .llm.config import LLMSettings
+from .paths import WORKFLOW_ROOT
 from .state import WorkflowState
 
-
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = WORKFLOW_ROOT
 UPSTREAM_PHASES: tuple[
     tuple[str, Callable[[WorkflowState], dict[str, Any]]], ...
 ] = (
