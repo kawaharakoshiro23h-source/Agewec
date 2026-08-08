@@ -2,7 +2,7 @@
 
 【本番経路: 現役（ただし単独では使わない）】決定論フォールバック＋共有ヘルパ。
 
-    呼ばれる側: nodes_llm（`deterministic` として）／pipeline_runtime
+    呼ばれる側: nodes_llm（`deterministic` として）／phases
     直接グラフに接続してはいけない。グラフが使うのは nodes_runtime。
 
 役割:
@@ -783,7 +783,7 @@ def visual_qa(state: WorkflowState) -> dict[str, Any]:
 def post_production(state: WorkflowState) -> dict[str, Any]:
     """[LEGACY 未使用] 旧・編集計画のみ版（`ffmpeg_pending` を返す）。
 
-    本番は `pipeline_runtime.post_production`（FFmpegで実結合＝`ffmpeg_executed`）。
+    本番は `phases.post_production`（FFmpegで実結合＝`ffmpeg_executed`）。
     互換のため残置。新しい実装はこちらに追加しないこと。
     """
     phase = "post_production"

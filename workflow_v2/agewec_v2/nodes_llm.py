@@ -2,7 +2,7 @@
 
 【本番経路: 現役】役割別のLLM実行（Executive Producer〜Review Board）。
 
-    呼ばれる側: nodes_runtime / pipeline_runtime
+    呼ばれる側: nodes_runtime / phases
     使う側    : nodes.py（`deterministic` としてフォールバック・共有ヘルパを利用）
 
 llm.enabled が false のとき、または LLM 呼び出しに失敗したときは、nodes.py の
@@ -1758,7 +1758,7 @@ def visual_qa(state: WorkflowState) -> dict[str, Any]:
 def post_production(state: WorkflowState) -> dict[str, Any]:
     """[LEGACY 未使用] 旧・LLMで編集計画のみ作る版（`ffmpeg_pending`）。
 
-    本番は `pipeline_runtime.post_production`（FFmpegで実結合＝`ffmpeg_executed`）。
+    本番は `phases.post_production`（FFmpegで実結合＝`ffmpeg_executed`）。
     互換のため残置。新しい実装はこちらに追加しないこと。
     """
     production_result = _result_data(state, "image_video_production")

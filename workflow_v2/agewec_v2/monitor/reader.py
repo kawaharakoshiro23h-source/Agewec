@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 # 工程の並びと表示名は本番のレポートと同じ定義を使う（二重管理を避ける）。
-from ..pipeline_runtime import _PHASE_PRESENTATION
+from ..phases.reporting import _PHASE_PRESENTATION
 
 _GATE_NAME = re.compile(r"^(?P<phase>.+)_attempt_(?P<attempt>\d+)\.json$")
 _CUT_DIR = re.compile(r"^cut_(?P<cut_id>\d+)$")

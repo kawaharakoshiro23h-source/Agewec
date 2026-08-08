@@ -3,17 +3,24 @@
 【本番経路: 正】graph_safe が読み込むノードの入口。
 
     呼ばれる側: graph_safe.py
-    使う側    : nodes_llm（役割別LLM）／pipeline_runtime（実処理）
+    使う側    : nodes_llm（役割別LLM）／phases（実処理）
 
-企画系フェーズは `nodes_llm` を、生成・QA・編集・証跡は `pipeline_runtime` を束ねる。
-新しいノードを足す場合は、実装を上記2つに置き、ここから公開する。
+企画系フェーズは `nodes_llm` を、生成・QA・編集・証跡は `phases`配下を束ねる。
+新しいノードは責務に対応するPhaseモジュールに置き、ここから公開する。
 """
 from __future__ import annotations
 
 from typing import Any
 
 from . import nodes_llm as llm_nodes
-from . import pipeline_runtime
+from .phases import (
+    cut_qa,
+    post_production as post,
+    production,
+    provenance as provenance_phase,
+    sequence_qa,
+    support_video,
+)
 
 
 executive_producer = llm_nodes.executive_producer
@@ -22,14 +29,14 @@ writer_storyboard = llm_nodes.writer_storyboard
 asset_curator = llm_nodes.asset_curator
 director = llm_nodes.director
 
-support_video_creator = pipeline_runtime.support_video_creator
-image_video_production = pipeline_runtime.image_video_production
-cut_visual_qa = pipeline_runtime.cut_visual_qa
-commit_cut_qa = pipeline_runtime.commit_cut_qa
-visual_qa = pipeline_runtime.sequence_visual_qa
-post_production = pipeline_runtime.post_production
-review_board = pipeline_runtime.review_board
-provenance = pipeline_runtime.provenance_package
+support_video_creator = support_video.support_video_creator
+image_video_production = production.image_video_production
+cut_visual_qa = cut_qa.cut_visual_qa
+commit_cut_qa = cut_qa.commit_cut_qa
+visual_qa = sequence_qa.sequence_visual_qa
+post_production = post.post_production
+review_board = post.review_board
+provenance = provenance_phase.provenance_package
 
 
 def select_video_shots(

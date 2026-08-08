@@ -43,3 +43,18 @@
 - Phase単体テストに加え、差し戻しから下流までの結合テストを実行する。
 - 実APIを使わずmockで確認する。
 - 全テスト成功後にのみ次のPhaseを移す。
+
+## 第3段階後の実装配置
+
+| モジュール | 責務 |
+| --- | --- |
+| `phases/common.py` | Phase間で共有する純粋ヘルパとJSON保存 |
+| `phases/support_video.py` | Phase 05.5・バックエンド固有Requestの構築 |
+| `phases/production.py` | Phase 06・動画生成、課金前ガード、入力画像前処理 |
+| `phases/cut_qa.py` | Phase 07A・カット技術QAと差し戻し確定 |
+| `phases/sequence_qa.py` | Phase 07B・全カットの編集準備確認 |
+| `phases/post_production.py` | Phase 08〜09・FFmpeg編集とReview Board |
+| `phases/reporting.py` | 制作過程レポートの集計とHTML/Markdown描画 |
+| `phases/provenance.py` | Phase 10・証跡と提出Package生成 |
+
+`nodes_runtime.py`は上記を直接参照する。`pipeline_runtime.py`は旧import利用者のための再エクスポートだけを行い、新規実装は追加しない。互換窓口は第6段階まで維持し、第8段階で利用箇所を監査して削除可否を決める。

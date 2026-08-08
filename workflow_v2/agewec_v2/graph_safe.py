@@ -2,7 +2,7 @@
 
 【本番経路: 正】これが実際に実行されるグラフ定義。
 
-    run.py → graph_safe.build_graph() → nodes_runtime → pipeline_runtime
+    run.py → graph_safe.build_graph() → nodes_runtime → phases
                                                       → nodes_llm → nodes
 
 ノードの実体は `nodes_runtime` から取り込む（`from . import nodes_runtime as nodes`）。

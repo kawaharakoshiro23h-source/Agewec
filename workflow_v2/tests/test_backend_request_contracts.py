@@ -11,6 +11,8 @@ from unittest.mock import patch
 import agewec_v2.pipeline_runtime as runtime
 from agewec_v2.backends.base import VideoResult
 from agewec_v2.backends.runway import RunwayError
+from agewec_v2.phases import cut_qa as cut_qa_runtime
+from agewec_v2.phases import production as production_runtime
 
 
 def _shot(image_path: str) -> dict:
@@ -284,12 +286,12 @@ class BackendRequestContractTest(unittest.TestCase):
                 "width": 1280,
                 "height": 720,
             }
-            with patch.object(runtime, "probe_media", return_value=technical), patch.object(
-                runtime, "decode_check"
+            with patch.object(cut_qa_runtime, "probe_media", return_value=technical), patch.object(
+                cut_qa_runtime, "decode_check"
             ), patch.object(
-                runtime, "extract_representative_frames", return_value=[]
+                cut_qa_runtime, "extract_representative_frames", return_value=[]
             ), patch.object(
-                runtime.review_page,
+                cut_qa_runtime.review_page,
                 "build_review_page",
                 return_value=Path(directory) / "review.html",
             ):
@@ -347,11 +349,11 @@ class BackendRequestContractTest(unittest.TestCase):
                 "height": 1365,
             }
             with patch.object(
-                runtime, "probe_media", return_value=technical
-            ), patch.object(runtime, "decode_check"), patch.object(
-                runtime, "extract_representative_frames", return_value=[]
+                cut_qa_runtime, "probe_media", return_value=technical
+            ), patch.object(cut_qa_runtime, "decode_check"), patch.object(
+                cut_qa_runtime, "extract_representative_frames", return_value=[]
             ), patch.object(
-                runtime.review_page,
+                cut_qa_runtime.review_page,
                 "build_review_page",
                 return_value=Path(directory) / "review.html",
             ):
@@ -388,11 +390,11 @@ class BackendRequestContractTest(unittest.TestCase):
                 },
             ]
             with patch.object(
-                runtime, "probe_media", side_effect=probes
+                production_runtime, "probe_media", side_effect=probes
             ), patch.object(
-                runtime, "downscale_image", side_effect=fake_downscale
+                production_runtime, "downscale_image", side_effect=fake_downscale
             ), patch.object(
-                runtime, "_video_backend", return_value=adapter
+                production_runtime, "_video_backend", return_value=adapter
             ):
                 update = runtime.image_video_production(state)
 
@@ -416,9 +418,9 @@ class BackendRequestContractTest(unittest.TestCase):
             state = _production_state(directory, str(source), "comfy")
             adapter = _CapturingAdapter(Path(directory) / "generated.mp4")
             with patch.object(
-                runtime, "_prepare_runway_input_image"
+                production_runtime, "_prepare_runway_input_image"
             ) as prepare, patch.object(
-                runtime, "_video_backend", return_value=adapter
+                production_runtime, "_video_backend", return_value=adapter
             ):
                 update = runtime.image_video_production(state)
 
@@ -438,9 +440,9 @@ class BackendRequestContractTest(unittest.TestCase):
             )
             adapter = _CapturingAdapter(Path(directory) / "generated.mp4")
             with patch.object(
-                runtime, "_prepare_runway_input_image"
+                production_runtime, "_prepare_runway_input_image"
             ) as prepare, patch.object(
-                runtime, "_video_backend", return_value=adapter
+                production_runtime, "_video_backend", return_value=adapter
             ):
                 update = runtime.image_video_production(state)
 
@@ -462,9 +464,9 @@ class BackendRequestContractTest(unittest.TestCase):
                 "bytes": source.stat().st_size,
             }
             with patch.object(
-                runtime, "probe_media", return_value=source_probe
+                production_runtime, "probe_media", return_value=source_probe
             ), patch.object(
-                runtime, "_video_backend", return_value=_FailingAdapter()
+                production_runtime, "_video_backend", return_value=_FailingAdapter()
             ):
                 update = runtime.image_video_production(state)
 
