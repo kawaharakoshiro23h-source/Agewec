@@ -1,4 +1,4 @@
-"""生成バックエンドの共通インターフェース。
+"""[LEGACY v1] 生成バックエンドの共通インターフェース。
 
 local / cloud を同じシグネチャで扱い、config.backend で差し替える。
 実装段階で local.py に ComfyUI/diffusers、cloud.py に Kling/Veo/Runway を入れる。

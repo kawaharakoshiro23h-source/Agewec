@@ -1,4 +1,4 @@
-"""ローカルバックエンド（スタブ）。
+"""[LEGACY v1] ローカルバックエンド（スタブ）。
 
 実装段階でここを埋める:
 - generate_image: ComfyUI(HTTP) or diffusers で FLUX を叩く

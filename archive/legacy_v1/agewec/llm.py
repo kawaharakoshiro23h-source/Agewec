@@ -1,4 +1,4 @@
-"""ローカルLLM（LM Studio / OpenAI互換API）を叩く薄いクライアント。
+"""[LEGACY v1] LM Studio / OpenAI互換APIクライアント。
 
 LM Studio 側で「サーバを起動」しておくこと（既定 http://localhost:1234/v1）。
 接続先・モデル名は .env で指定する:

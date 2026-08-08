@@ -1,4 +1,4 @@
-"""バックエンドの選択。config.backend に応じて local/cloud を返す。"""
+"""[LEGACY v1] config.backend に応じたバックエンド選択。"""
 from __future__ import annotations
 
 from . import local

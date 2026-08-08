@@ -1,4 +1,4 @@
-"""Asset ステージの中核: 北九州パレット公式ギャラリーの素材カタログ生成と照合。
+"""[LEGACY v1] Asset ステージの素材カタログ生成と照合。
 
 ■ カタログ生成（ネット接続が要る。あなたのMacで実行する前提）
     uv run python -m agewec.assets            # フォトギャラリーを巡回して asset_catalog.json を作る

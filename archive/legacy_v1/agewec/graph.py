@@ -1,4 +1,4 @@
-"""LangGraph のグラフ定義。
+"""[LEGACY v1] LangGraph のグラフ定義。
 
 planner → asset_planner → image_gen → qa(⇄image_gen) → video_gen
        → audio → assembly → provenance → END
