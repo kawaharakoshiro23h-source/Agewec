@@ -5,8 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .. import nodes as deterministic
-from .. import nodes_llm as llm_nodes
+from ..fallbacks import common as deterministic
 from ..media_tools import (
     concat_video_clips,
     decode_check,
@@ -15,6 +14,7 @@ from ..media_tools import (
     probe_media,
 )
 from ..state import WorkflowState
+from ..roles import downstream as llm_nodes
 
 from .common import (
     _approved_project_value, _json_write, _result_data,
@@ -301,4 +301,3 @@ def review_board(state: WorkflowState) -> dict[str, Any]:
         phase_results["review_board"] = result
         update["phase_results"] = phase_results
     return update
-

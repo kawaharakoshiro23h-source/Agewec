@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .. import nodes as deterministic
+from ..fallbacks import common as deterministic
 from ..backends import (
     BudgetStatus,
     ComfyClient,
@@ -655,4 +655,3 @@ def image_video_production(state: WorkflowState) -> dict[str, Any]:
         }
     )
     return update
-

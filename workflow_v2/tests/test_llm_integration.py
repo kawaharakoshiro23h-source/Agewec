@@ -13,6 +13,7 @@ import yaml
 
 from agewec_v2.graph import build_graph
 from agewec_v2 import nodes_llm
+from agewec_v2.roles import assets as asset_role
 from agewec_v2.llm.role_runner import (
     ENGLISH_PROMPT_FIELDS,
     MACHINE_TOKEN_FIELDS,
@@ -605,17 +606,17 @@ class LLMIntegrationTest(unittest.TestCase):
         }
         with (
             patch.object(
-                nodes_llm,
+                asset_role,
                 "_asset_candidates",
                 return_value=candidates,
             ),
             patch.object(
-                nodes_llm,
+                asset_role,
                 "_shortlist_candidates",
                 return_value=candidates,
             ),
             patch.object(
-                nodes_llm.deterministic,
+                asset_role.deterministic,
                 "_load_catalog",
                 return_value={"source": "test catalog"},
             ),

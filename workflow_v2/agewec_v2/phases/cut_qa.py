@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from .. import nodes as deterministic
+from ..fallbacks import common as deterministic
 from .. import review_page
 from ..media_tools import (
     MediaToolError,
@@ -430,4 +430,3 @@ def commit_cut_qa(state: SafeWorkflowState) -> dict[str, Any]:
         "human_cut_qa_decisions": human_decisions,
         "events": events,
     }
-

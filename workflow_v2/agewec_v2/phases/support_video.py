@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .. import nodes as deterministic
+from ..fallbacks import common as deterministic
 from ..backends import (
     Capabilities,
     UnsupportedDurationError,
@@ -357,4 +357,3 @@ def support_video_creator(state: WorkflowState) -> dict[str, Any]:
         }
     )
     return update
-

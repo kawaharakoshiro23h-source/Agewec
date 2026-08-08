@@ -3,16 +3,15 @@
 【本番経路: 正】graph_safe が読み込むノードの入口。
 
     呼ばれる側: graph_safe.py
-    使う側    : nodes_llm（役割別LLM）／phases（実処理）
+    使う側    : roles（役割別LLM）／phases（実処理）
 
-企画系フェーズは `nodes_llm` を、生成・QA・編集・証跡は `phases`配下を束ねる。
+企画系フェーズは `roles` を、生成・QA・編集・証跡は `phases`配下を束ねる。
 新しいノードは責務に対応するPhaseモジュールに置き、ここから公開する。
 """
 from __future__ import annotations
 
 from typing import Any
 
-from . import nodes_llm as llm_nodes
 from .phases import (
     cut_qa,
     post_production as post,
@@ -21,13 +20,14 @@ from .phases import (
     sequence_qa,
     support_video,
 )
+from .roles import assets, director as director_role, project, storyboard
 
 
-executive_producer = llm_nodes.executive_producer
-creative_director = llm_nodes.creative_director
-writer_storyboard = llm_nodes.writer_storyboard
-asset_curator = llm_nodes.asset_curator
-director = llm_nodes.director
+executive_producer = project.executive_producer
+creative_director = project.creative_director
+writer_storyboard = storyboard.writer_storyboard
+asset_curator = assets.asset_curator
+director = director_role.director
 
 support_video_creator = support_video.support_video_creator
 image_video_production = production.image_video_production

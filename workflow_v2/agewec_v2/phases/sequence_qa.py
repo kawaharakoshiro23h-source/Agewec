@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .. import nodes as deterministic
+from ..fallbacks import common as deterministic
 from ..state import WorkflowState
 
 from .common import _approved_project_value, _result_data
@@ -118,4 +118,3 @@ def sequence_visual_qa(state: WorkflowState) -> dict[str, Any]:
             issue["description"] for issue in issues
         ],
     )
-

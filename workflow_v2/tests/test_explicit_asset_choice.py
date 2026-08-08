@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from agewec_v2 import nodes_llm
+from agewec_v2.roles import assets as asset_role
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -145,11 +146,11 @@ class ExplicitAssetChoiceTest(unittest.TestCase):
             self.no_rights,
         ]
 
-        self._real = nodes_llm._asset_candidates
-        nodes_llm._asset_candidates = lambda state: copy.deepcopy(self.catalogue)
+        self._real = asset_role._asset_candidates
+        asset_role._asset_candidates = lambda state: copy.deepcopy(self.catalogue)
 
     def tearDown(self) -> None:
-        nodes_llm._asset_candidates = self._real
+        asset_role._asset_candidates = self._real
         self._tmp.cleanup()
 
     def _state(self, feedback: str) -> dict[str, Any]:

@@ -31,7 +31,7 @@ import yaml
 from . import nodes as det
 from .backends.comfy_runtime import ComfyClient, ComfyGenerationRequest
 from .paths import WORKFLOW_ROOT
-from .pipeline_runtime import _ltx_frame_count
+from .phases.common import _ltx_frame_count
 
 ROOT = WORKFLOW_ROOT
 

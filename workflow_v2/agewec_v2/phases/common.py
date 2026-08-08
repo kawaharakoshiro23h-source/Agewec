@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from .. import nodes as deterministic
+from ..fallbacks import common as deterministic
 from ..state import WorkflowState
 
 

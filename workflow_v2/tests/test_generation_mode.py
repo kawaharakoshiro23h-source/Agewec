@@ -20,6 +20,7 @@ from lxml import html as LH
 
 from agewec_v2.backends import to_video_request
 from agewec_v2 import nodes_llm
+from agewec_v2.roles import director as director_role
 from agewec_v2.llm.schemas import DirectionPlan, DirectionShot
 from agewec_v2.pipeline_runtime import (
     _copy_cut_sources,
@@ -212,7 +213,7 @@ class DirectorModelSelectionTest(unittest.TestCase):
             captured.update(kwargs["upstream"]["video_model_policy"])
             return kwargs["transform"](self._llm_output("hailuo3"))
 
-        with patch.object(nodes_llm, "_run_role", side_effect=fake_run_role):
+        with patch.object(director_role, "_run_role", side_effect=fake_run_role):
             result = nodes_llm.director(self._state())
 
         self.assertEqual(result["shots"][0]["model"], "hailuo3")
@@ -226,7 +227,7 @@ class DirectorModelSelectionTest(unittest.TestCase):
         def fake_run_role(_state, **kwargs):
             return kwargs["transform"](self._llm_output(None))
 
-        with patch.object(nodes_llm, "_run_role", side_effect=fake_run_role):
+        with patch.object(director_role, "_run_role", side_effect=fake_run_role):
             result = nodes_llm.director(self._state())
 
         self.assertEqual(result["shots"][0]["model"], "gen4.5")

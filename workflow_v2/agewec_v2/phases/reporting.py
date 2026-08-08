@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .. import nodes as deterministic
+from ..fallbacks import common as deterministic
 from .. import timing
 from ..paths import runtime_paths
 from ..state import WorkflowState
@@ -1310,4 +1310,3 @@ Review Boardの修正はPost Productionへ戻ります。</p></section>
 内部Chain-of-Thought、APIキー、AIサーバーの生ログは掲載しません。
 完全な機械可読証跡はprovenance.jsonに保存されています。</p>
 </body></html>"""
-

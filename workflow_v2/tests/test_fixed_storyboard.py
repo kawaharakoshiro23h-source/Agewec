@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from agewec_v2 import nodes_llm
+from agewec_v2.roles import storyboard as storyboard_role
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,12 +85,12 @@ class FixedStoryboardTest(unittest.TestCase):
         self.config["storyboard"]["fixed_cuts"] = [_cut(1, 10.0)]
         called = []
 
-        original = nodes_llm._run_role
-        nodes_llm._run_role = lambda *a, **k: called.append(1)
+        original = storyboard_role._run_role
+        storyboard_role._run_role = lambda *a, **k: called.append(1)
         try:
             result = self._run()
         finally:
-            nodes_llm._run_role = original
+            storyboard_role._run_role = original
         self.assertEqual(called, [], "LLMが呼ばれた")
         self.assertEqual(result["status"], "success")
 
@@ -167,12 +168,12 @@ class FixedStoryboardTest(unittest.TestCase):
                 if value is not None:
                     self.config["storyboard"]["fixed_cuts"] = value
                 called = []
-                original = nodes_llm._run_role
-                nodes_llm._run_role = lambda *a, **k: (called.append(1), {})[1]
+                original = storyboard_role._run_role
+                storyboard_role._run_role = lambda *a, **k: (called.append(1), {})[1]
                 try:
                     nodes_llm.writer_storyboard(self._state())
                 finally:
-                    nodes_llm._run_role = original
+                    storyboard_role._run_role = original
                 self.assertEqual(len(called), 1, "LLM経路に入らなかった")
 
 

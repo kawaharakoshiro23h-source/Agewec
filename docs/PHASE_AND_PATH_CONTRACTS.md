@@ -1,7 +1,7 @@
 # Phase・パス契約
 
-最終更新: 2026-08-08  
-対象: 第2段階（巨大ファイル分割前の境界固定）
+最終更新: 2026-08-09
+対象: 第2〜4段階（巨大ファイル分割後の境界固定）
 
 ## 目的
 
@@ -58,3 +58,25 @@
 | `phases/provenance.py` | Phase 10・証跡と提出Package生成 |
 
 `nodes_runtime.py`は上記を直接参照する。`pipeline_runtime.py`は旧import利用者のための再エクスポートだけを行い、新規実装は追加しない。互換窓口は第6段階まで維持し、第8段階で利用箇所を監査して削除可否を決める。
+
+## 第4段階後の役割・フォールバック配置
+
+LLMを利用する役割処理は`roles/`、LLMを利用できない場合の決定的処理は`fallbacks/`へ分離する。
+
+| モジュール | 責務 |
+| --- | --- |
+| `roles/common.py` | LLM設定、RoleRunner呼び出し、エラー・metadata共通処理 |
+| `roles/project.py` | Executive Producer、Creative Director |
+| `roles/storyboard.py` | Writer / Storyboardと固定絵コンテ処理 |
+| `roles/assets.py` | 素材候補作成、ショートリスト、明示指定、Asset Curator |
+| `roles/director.py` | Director、生成方式・素材整合の構造化検証 |
+| `roles/downstream.py` | Post Production、Review Board、ProvenanceのLLM役割 |
+| `fallbacks/common.py` | state、設定、feedback、metadataの決定的共通処理 |
+| `fallbacks/planning.py` | 企画・コンセプト・絵コンテの決定的フォールバック |
+| `fallbacks/assets.py` | 素材選定の決定的フォールバック |
+| `fallbacks/director.py` | 演出計画の決定的フォールバック |
+| `fallbacks/legacy_media.py` | 旧決定的メディア処理の互換実装 |
+
+依存方向は`nodes_runtime.py → phases/・roles/ → fallbacks/`とする。`roles/`と`fallbacks/`から`nodes_llm.py`、`nodes.py`、`nodes_runtime.py`へ逆importしてはならない。
+
+`nodes_llm.py`と`nodes.py`は旧import利用者向けの再エクスポートだけを行い、新しいロジックを追加しない。互換窓口は第6段階まで維持し、第8段階で利用箇所を監査して削除可否を決める。
