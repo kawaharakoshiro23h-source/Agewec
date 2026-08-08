@@ -28,6 +28,14 @@ from agewec_v2.state_safe import SafeWorkflowState
 def _state(**overrides):
     base = {
         "run_id": "run-test",
+        "config": {
+            "paths": {
+                "work_dir": str(
+                    Path(tempfile.gettempdir())
+                    / "agewec-human-cut-review-tests"
+                )
+            }
+        },
         "current_cut_id": 3,
         "production_queue": [3, 4],
         "approved_cut_ids": [1, 2],

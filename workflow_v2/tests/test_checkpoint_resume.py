@@ -10,6 +10,9 @@ from langgraph.types import Command, interrupt
 
 from agewec_v2.checkpointing import (
     RunNotFoundError,
+    UnsafeLegacyContinuationError,
+    checkpoint_contains_run,
+    checkpoint_db_for_resume,
     load_persisted_result,
     open_sqlite_checkpointer,
 )
@@ -32,6 +35,66 @@ def _approval_graph(checkpointer):
 
 
 class CheckpointResumeTest(unittest.TestCase):
+    def test_incomplete_legacy_run_cannot_continue_with_stale_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "legacy.sqlite"
+            thread = {"configurable": {"thread_id": "run-legacy-pending"}}
+            with open_sqlite_checkpointer(database) as checkpointer:
+                _approval_graph(checkpointer).invoke({"value": 1}, thread)
+
+            with open_sqlite_checkpointer(database) as checkpointer:
+                with self.assertRaisesRegex(
+                    UnsafeLegacyContinuationError,
+                    "専用のstate移行",
+                ):
+                    load_persisted_result(
+                        _approval_graph(checkpointer),
+                        thread,
+                        "run-legacy-pending",
+                        allow_continuation=False,
+                    )
+
+    def test_resume_database_prefers_new_location_when_run_exists_there(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            preferred = root / "runtime/checkpoints.sqlite"
+            legacy = root / "workflow_v2/work/checkpoints.sqlite"
+            thread = {"configurable": {"thread_id": "run-new"}}
+            with open_sqlite_checkpointer(preferred) as checkpointer:
+                _approval_graph(checkpointer).invoke({"value": 1}, thread)
+
+            self.assertTrue(checkpoint_contains_run(preferred, "run-new"))
+            self.assertEqual(
+                checkpoint_db_for_resume("run-new", preferred, legacy),
+                preferred,
+            )
+
+    def test_resume_database_falls_back_to_legacy_location(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            preferred = root / "runtime/checkpoints.sqlite"
+            legacy = root / "workflow_v2/work/checkpoints.sqlite"
+            thread = {"configurable": {"thread_id": "run-legacy"}}
+            with open_sqlite_checkpointer(legacy) as checkpointer:
+                _approval_graph(checkpointer).invoke({"value": 1}, thread)
+
+            self.assertFalse(checkpoint_contains_run(preferred, "run-legacy"))
+            self.assertTrue(checkpoint_contains_run(legacy, "run-legacy"))
+            self.assertEqual(
+                checkpoint_db_for_resume("run-legacy", preferred, legacy),
+                legacy,
+            )
+
+    def test_unknown_run_keeps_preferred_database_for_normal_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            preferred = root / "runtime/checkpoints.sqlite"
+            legacy = root / "workflow_v2/work/checkpoints.sqlite"
+            self.assertEqual(
+                checkpoint_db_for_resume("run-missing", preferred, legacy),
+                preferred,
+            )
+
     def test_interrupted_run_resumes_after_reopening_database(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "checkpoints.sqlite"

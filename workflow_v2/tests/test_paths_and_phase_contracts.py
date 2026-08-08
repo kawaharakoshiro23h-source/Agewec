@@ -13,7 +13,7 @@ from agewec_v2.phase_contracts import (
 
 
 class RuntimePathsTest(unittest.TestCase):
-    def test_default_layout_preserves_current_directory_contract(self) -> None:
+    def test_default_layout_uses_project_runtime_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = (Path(directory) / "project").resolve()
             workflow = (project / "workflow_v2").resolve()
@@ -21,13 +21,18 @@ class RuntimePathsTest(unittest.TestCase):
                 {}, project_root=project, workflow_root=workflow
             )
 
-            self.assertEqual(layout.work_root, workflow / "work")
-            self.assertEqual(layout.runs_root, workflow / "work" / "runs")
-            self.assertEqual(layout.submissions_root, workflow / "submissions")
+            self.assertEqual(layout.runtime_root, project / "runtime")
+            self.assertEqual(layout.work_root, project / "runtime")
+            self.assertEqual(layout.runs_root, project / "runtime" / "runs")
+            self.assertEqual(
+                layout.submissions_root,
+                project / "runtime" / "submissions",
+            )
             self.assertEqual(layout.assets_root, project / "assets_dl")
             self.assertEqual(layout.asset_catalog, project / "asset_catalog.json")
             self.assertEqual(
-                layout.checkpoint_db, workflow / "work" / "checkpoints.sqlite"
+                layout.checkpoint_db,
+                project / "runtime" / "checkpoints" / "checkpoints.sqlite",
             )
             self.assertEqual(layout.prompt_root, PACKAGE_ROOT / "prompts")
 
@@ -65,6 +70,63 @@ class RuntimePathsTest(unittest.TestCase):
             self.assertEqual(
                 layout.cut_path("run-1", 3, "attempt.mp4"),
                 external_runs / "run-1" / "cuts/cut_03/attempt.mp4",
+            )
+
+    def test_runtime_layout_resolves_execution_paths_from_runtime_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "project").resolve()
+            workflow = (project / "workflow_v2").resolve()
+            layout = RuntimePaths.from_config(
+                {
+                    "paths": {
+                        "runtime_dir": "var/runtime",
+                        "runs_dir": "executions",
+                        "submissions_dir": "packages",
+                        "checkpoint_db": "state/checkpoints.sqlite",
+                        "provenance_file": "shared/provenance.json",
+                    }
+                },
+                project_root=project,
+                workflow_root=workflow,
+            )
+
+            runtime = project / "var/runtime"
+            self.assertEqual(layout.runtime_root, runtime)
+            self.assertEqual(layout.work_root, runtime)
+            self.assertEqual(layout.runs_root, runtime / "executions")
+            self.assertEqual(layout.submissions_root, runtime / "packages")
+            self.assertEqual(
+                layout.checkpoint_db,
+                runtime / "state/checkpoints.sqlite",
+            )
+            self.assertEqual(
+                layout.provenance_file,
+                runtime / "shared/provenance.json",
+            )
+
+    def test_explicit_legacy_paths_keep_workflow_relative_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "project").resolve()
+            workflow = (project / "workflow_v2").resolve()
+            layout = RuntimePaths.from_config(
+                {
+                    "paths": {
+                        "work_dir": "work",
+                        "runs_dir": "runs",
+                        "submissions_dir": "submissions",
+                        "checkpoint_db": "work/checkpoints.sqlite",
+                    }
+                },
+                project_root=project,
+                workflow_root=workflow,
+            )
+
+            self.assertEqual(layout.work_root, workflow / "work")
+            self.assertEqual(layout.runs_root, workflow / "work/runs")
+            self.assertEqual(layout.submissions_root, workflow / "submissions")
+            self.assertEqual(
+                layout.checkpoint_db,
+                workflow / "work/checkpoints.sqlite",
             )
 
 

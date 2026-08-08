@@ -28,7 +28,7 @@ from langgraph.graph import END, START, StateGraph
 from . import nodes_runtime as runtime
 from .backends.comfy_runtime import ComfyClient
 from .llm.config import LLMSettings
-from .paths import WORKFLOW_ROOT
+from .paths import WORKFLOW_ROOT, runtime_paths
 from .state import WorkflowState
 
 ROOT = WORKFLOW_ROOT
@@ -452,9 +452,7 @@ def write_report(
     output: Path | None = None,
 ) -> Path:
     if output is None:
-        work_dir = Path(config.get("paths", {}).get("work_dir", "work"))
-        if not work_dir.is_absolute():
-            work_dir = ROOT / work_dir
+        work_dir = runtime_paths(config).work_root
         output = (
             work_dir
             / "pipeline_smoke"

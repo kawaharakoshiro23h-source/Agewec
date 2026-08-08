@@ -187,10 +187,10 @@ runway:
       cost_per_second_usd: 0.15
 
 paths:
-  work_dir: work
+  runtime_dir: runtime
   runs_dir: runs
-  checkpoint_db: work/checkpoints.sqlite
-  provenance_file: work/provenance.json
+  checkpoint_db: checkpoints/checkpoints.sqlite
+  provenance_file: provenance.json
   submissions_dir: submissions
   assets_dir: assets_dl
   asset_catalog: asset_catalog.json

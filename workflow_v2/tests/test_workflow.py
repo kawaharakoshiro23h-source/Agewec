@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,9 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class WorkflowV2Test(unittest.TestCase):
     def setUp(self) -> None:
+        self.runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(self.runtime.cleanup)
         self.config = yaml.safe_load(
             (ROOT / "config.yaml").read_text(encoding="utf-8")
         )
+        self.config["paths"] = {"runtime_dir": self.runtime.name}
         # The end-to-end fixture intentionally exercises all six fallback cuts.
         self.config["production"]["max_video_cuts_per_run"] = 6
 

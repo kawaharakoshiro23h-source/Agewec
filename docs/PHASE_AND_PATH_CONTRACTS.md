@@ -1,7 +1,7 @@
 # Phase・パス契約
 
 最終更新: 2026-08-09
-対象: 第2〜4段階（巨大ファイル分割後の境界固定）
+対象: 第2〜5段階（巨大ファイル分割・runtime集約後の境界固定）
 
 ## 目的
 
@@ -13,15 +13,16 @@
 
 | 種類 | 基準ディレクトリ | 現在の既定値 |
 | --- | --- | --- |
-| work | workflow root | `workflow_v2/work` |
-| runs | work root | `workflow_v2/work/runs` |
-| submissions | workflow root | `workflow_v2/submissions` |
+| runtime/work | project root | `runtime` |
+| runs | runtime root | `runtime/runs` |
+| submissions | runtime root | `runtime/submissions` |
 | assets | project root | `assets_dl` |
 | asset catalog | project root | `asset_catalog.json` |
-| checkpoints | workflow root | `workflow_v2/work/checkpoints.sqlite` |
+| checkpoints | runtime root | `runtime/checkpoints/checkpoints.sqlite` |
+| shared provenance | runtime root | `runtime/provenance.json` |
 | prompts | package root | `agewec_v2/prompts` |
 
-相対パスの意味は現状維持とする。将来`runtime/`へ移すときは設定値を変え、Phase実装へ新しいパス計算を追加しない。
+`paths.runtime_dir`を持つ設定は、実行生成物の相対パスをruntime root基準で解決する。`runtime_dir`を持たず旧キーを明示する保存済み設定は、互換性のためworkflow root基準の旧契約を維持する。Phase実装へ個別のパス計算を追加しない。
 
 ## Phase契約
 
@@ -80,3 +81,13 @@ LLMを利用する役割処理は`roles/`、LLMを利用できない場合の決
 依存方向は`nodes_runtime.py → phases/・roles/ → fallbacks/`とする。`roles/`と`fallbacks/`から`nodes_llm.py`、`nodes.py`、`nodes_runtime.py`へ逆importしてはならない。
 
 `nodes_llm.py`と`nodes.py`は旧import利用者向けの再エクスポートだけを行い、新しいロジックを追加しない。互換窓口は第6段階まで維持し、第8段階で利用箇所を監査して削除可否を決める。
+
+## 第5段階後のruntime・checkpoint契約
+
+1. 新規Runの途中成果物、提出候補、checkpointは`runtime/`へ出力する。
+2. `runtime/`はGit追跡外とし、ソースコードと実行生成物を混在させない。
+3. 旧`workflow_v2/work`と`workflow_v2/submissions`は移動・削除せず、過去Runの参照整合性を維持する。
+4. 新checkpointに同じrun_idがあれば新checkpointを優先する。
+5. 新checkpointに無く旧checkpointにある完了済みrunは、自動検出して読み取り可能とする。
+6. 未完了の旧runは、state内の移行前絶対パスを誤用しないよう継続を拒否する。再開には専用のstate移行が必要となる。
+7. 新runtimeの未完了runは、同じrun_idから通常どおり再開できる。

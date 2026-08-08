@@ -22,7 +22,7 @@ def main() -> None:
         "--runs-root",
         type=Path,
         default=runtime_paths().runs_root,
-        help="run が並ぶディレクトリ（既定: work/runs）",
+        help="run が並ぶディレクトリ（既定: runtime/runs）",
     )
     parser.add_argument(
         "--assets-root",

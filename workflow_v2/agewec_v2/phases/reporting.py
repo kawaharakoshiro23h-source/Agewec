@@ -684,7 +684,7 @@ def _human_intervention_summary(state: WorkflowState) -> dict[str, int]:
 def _portable_path(value: Any) -> str:
     """提出物に載せるパスから、実行環境固有の部分を取り除く。
 
-    `/Users/<name>/.../Agewec/workflow_v2/work/...` のような絶対パスをそのまま
+    `/Users/<name>/.../Agewec/runtime/...` のような絶対パスをそのまま
     載せると、提出先にユーザー名とディレクトリ構成が見える。まずリポジトリからの
     相対表記へ畳み、残った絶対パスはホーム部分を `~/` に置き換える。
     """

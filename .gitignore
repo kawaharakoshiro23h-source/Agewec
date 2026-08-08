@@ -19,6 +19,7 @@ venv/
 
 # --- 生成物・作業ファイル ---
 work/
+runtime/
 # 北九州パレットからDLした実写（再取得可能なので追跡しない・二次配布禁止）
 assets_dl/
 # 生成物（再生成可能）
@@ -37,4 +38,3 @@ asset_catalog.json
 AGEWEC2026_提出資料/
 
 other/
-

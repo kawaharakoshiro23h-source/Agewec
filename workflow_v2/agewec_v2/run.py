@@ -15,11 +15,18 @@ from langgraph.types import Command
 from . import timing
 from .checkpointing import (
     RunNotFoundError,
+    UnsafeLegacyContinuationError,
+    checkpoint_db_for_resume,
     load_persisted_result,
     open_sqlite_checkpointer,
 )
 from .graph_safe import build_graph
-from .paths import WORKFLOW_ROOT, RuntimePaths, runtime_paths
+from .paths import (
+    WORKFLOW_ROOT,
+    RuntimePaths,
+    legacy_checkpoint_db,
+    runtime_paths,
+)
 from .review_display import (
     changed_field_labels,
     feedback_status_label,
@@ -30,6 +37,7 @@ from .review_display import (
 
 ROOT = WORKFLOW_ROOT
 DEFAULT_CHECKPOINT_DB = runtime_paths().checkpoint_db
+LEGACY_CHECKPOINT_DB = legacy_checkpoint_db()
 
 
 def _resume_command(run_id: str, checkpoint_db: Path) -> str:
@@ -326,18 +334,34 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint-db",
         type=Path,
-        default=DEFAULT_CHECKPOINT_DB,
-        help="状態保存用SQLiteファイル",
+        default=None,
+        help=(
+            "状態保存用SQLiteファイル（既定: runtime/checkpoints/"
+            "checkpoints.sqlite）"
+        ),
     )
     args = parser.parse_args()
 
     if args.resume and (args.config is not None or args.preset is not None):
         parser.error("--resumeでは保存済み設定を使うため、--config/--presetは指定できません")
 
-    checkpoint_db = args.checkpoint_db
+    explicit_checkpoint_db = args.checkpoint_db is not None
+    checkpoint_db = args.checkpoint_db or DEFAULT_CHECKPOINT_DB
     if not checkpoint_db.is_absolute():
         checkpoint_db = runtime_paths().resolve_workflow(checkpoint_db)
     checkpoint_db = checkpoint_db.resolve()
+    if args.resume and not explicit_checkpoint_db:
+        selected = checkpoint_db_for_resume(
+            args.resume,
+            checkpoint_db,
+            LEGACY_CHECKPOINT_DB.resolve(),
+        )
+        if selected != checkpoint_db:
+            print(f"[旧状態保存を使用] {selected}")
+        checkpoint_db = selected
+    using_legacy_checkpoint = (
+        checkpoint_db == LEGACY_CHECKPOINT_DB.resolve()
+    )
     run_id = args.resume or f"run-{uuid.uuid4().hex[:10]}"
     thread = {"configurable": {"thread_id": run_id}}
 
@@ -347,8 +371,13 @@ def main() -> None:
             print(f"[状態保存] {checkpoint_db}")
             if args.resume:
                 try:
-                    result = load_persisted_result(graph, thread, run_id)
-                except RunNotFoundError as exc:
+                    result = load_persisted_result(
+                        graph,
+                        thread,
+                        run_id,
+                        allow_continuation=not using_legacy_checkpoint,
+                    )
+                except (RunNotFoundError, UnsafeLegacyContinuationError) as exc:
                     parser.error(str(exc))
                 print(f"[実行再開] run_id: {run_id}")
             else:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -41,8 +42,17 @@ def autonomous_config() -> dict:
 
 
 class ExecutionLimitsTest(unittest.TestCase):
-    def test_safe_graph_completes_inside_budget(self) -> None:
+    def setUp(self) -> None:
+        self.runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(self.runtime.cleanup)
+
+    def _config(self) -> dict:
         config = autonomous_config()
+        config["paths"] = {"runtime_dir": self.runtime.name}
+        return config
+
+    def test_safe_graph_completes_inside_budget(self) -> None:
+        config = self._config()
         result = build_graph().invoke(
             {
                 "run_id": "safe-complete",
@@ -62,7 +72,7 @@ class ExecutionLimitsTest(unittest.TestCase):
         self.assertEqual(result["transition_count"], 22)
 
     def test_global_budget_aborts_before_unbounded_execution(self) -> None:
-        config = autonomous_config()
+        config = self._config()
         config["execution_limits"]["max_total_phase_executions"] = 3
         result = build_graph().invoke(
             {
@@ -83,7 +93,7 @@ class ExecutionLimitsTest(unittest.TestCase):
         self.assertEqual(result["limit_status"]["phase"], "asset_curator")
 
     def test_per_phase_retry_budget_is_enforced(self) -> None:
-        config = autonomous_config()
+        config = self._config()
         state = {
             "config": config,
             "attempts": {"executive_producer": 3},

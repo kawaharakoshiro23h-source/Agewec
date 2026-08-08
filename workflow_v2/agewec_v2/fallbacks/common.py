@@ -19,11 +19,11 @@ AWARD_GENRES = {
 def _work_path(state: WorkflowState, *parts: str) -> Path:
     """実行単位（run_id）で分離された作業ディレクトリのパスを返す。
 
-        work/runs/<run_id>/<parts...>
+        runtime/runs/<run_id>/<parts...>
 
     実行ごとにフォルダを分けることで、過去runとの上書き・混同を防ぐ。
     複数モデルを比較する際も、成果物が互いに潰し合わない。
-    run_id が無い場合（単体テスト等）は従来どおり work/ 直下を使う。
+    run_id が無い場合（単体テスト等）はruntime直下を使う。
     """
     run_id = str(state.get("run_id") or "")
     return runtime_paths(state.get("config", {})).work_path(
@@ -33,7 +33,7 @@ def _work_path(state: WorkflowState, *parts: str) -> Path:
 
 
 def _cut_path(state: WorkflowState, cut_id: int, *parts: str) -> Path:
-    """カット単位のディレクトリ（work/runs/<run_id>/cuts/cut_XX/...）。"""
+    """カット単位のディレクトリ（runtime/runs/<run_id>/cuts/cut_XX/...）。"""
     return _work_path(state, "cuts", f"cut_{int(cut_id):02d}", *parts)
 
 

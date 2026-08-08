@@ -20,6 +20,15 @@ from agewec_v2.run import (
 
 
 class RunCliReviewDisplayTest(unittest.TestCase):
+    def test_default_checkpoint_database_is_under_runtime(self) -> None:
+        self.assertEqual(
+            DEFAULT_CHECKPOINT_DB,
+            DEFAULT_CHECKPOINT_DB.parents[1]
+            / "checkpoints"
+            / "checkpoints.sqlite",
+        )
+        self.assertEqual(DEFAULT_CHECKPOINT_DB.parents[1].name, "runtime")
+
     def test_resume_command_includes_non_default_checkpoint_database(self) -> None:
         default_command = _resume_command(
             "run-test",

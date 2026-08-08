@@ -82,11 +82,11 @@ def _config(backend: str, seconds: float) -> dict[str, Any]:
         "profile": "draft",
     }
     # 出力を隔離（本番の work/ を汚さない）
-    config["paths"] = {
-        **config.get("paths", {}),
-        "work_dir": "work/route_test",
-        "submissions_dir": "work/route_test/submissions",
-    }
+    paths = dict(config.get("paths", {}))
+    paths["runtime_dir"] = str(ROOT / "work" / "route_test")
+    paths.pop("work_dir", None)
+    paths["submissions_dir"] = "submissions"
+    config["paths"] = paths
     config["llm"] = {**config.get("llm", {}), "enabled": False}
     return config
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -222,6 +223,10 @@ class FakeChatHandler(BaseHTTPRequestHandler):
 
 
 class LLMIntegrationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(self.runtime.cleanup)
+
     @classmethod
     def setUpClass(cls) -> None:
         FakeChatHandler.roles = []
@@ -251,6 +256,7 @@ class LLMIntegrationTest(unittest.TestCase):
             "target_duration_seconds": 30,
         }
         config["production"]["backend"] = "mock"
+        config["paths"] = {"runtime_dir": self.runtime.name}
         config["production"]["max_video_cuts_per_run"] = 2
         # このテストは「全ロールがLLM経由で動くこと」を見るものなので、
         # 同梱configの固定絵コンテは無効にする（有効だとwriter_storyboardが

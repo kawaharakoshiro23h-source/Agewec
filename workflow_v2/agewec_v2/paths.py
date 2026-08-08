@@ -3,6 +3,10 @@
 All relative paths in workflow configuration are resolved here.  Keeping this
 logic out of phase implementations makes the later ``runtime/`` and ``src/``
 migrations mechanical instead of behavioural changes.
+
+New executions use ``<project>/runtime``.  Configurations that explicitly use
+the pre-refactor path keys without ``runtime_dir`` keep their legacy
+workflow-relative meaning, so persisted runs and focused tests remain readable.
 """
 from __future__ import annotations
 
@@ -59,6 +63,7 @@ class RuntimePaths:
 
     project_root: Path
     workflow_root: Path
+    runtime_root: Path
     work_root: Path
     runs_root: Path
     submissions_root: Path
@@ -80,13 +85,54 @@ class RuntimePaths:
         values = config.get("paths", {}) or {}
         project = (project_root or PROJECT_ROOT).expanduser().resolve()
         workflow = (workflow_root or WORKFLOW_ROOT).expanduser().resolve()
+        runtime = _resolve(project, values.get("runtime_dir", "runtime"))
 
-        work = _resolve(workflow, values.get("work_dir", "work"))
-        runs = _resolve(work, values.get("runs_dir", "runs"))
-        submissions = _resolve(
-            workflow,
-            values.get("submissions_dir", "submissions"),
+        legacy_keys = {
+            "work_dir",
+            "runs_dir",
+            "submissions_dir",
+            "checkpoint_db",
+            "provenance_file",
+        }
+        uses_runtime_layout = (
+            "runtime_dir" in values
+            or not any(key in values for key in legacy_keys)
         )
+        if uses_runtime_layout:
+            work = _resolve(runtime, values.get("work_dir", "."))
+            runs = _resolve(runtime, values.get("runs_dir", "runs"))
+            submissions = _resolve(
+                runtime,
+                values.get("submissions_dir", "submissions"),
+            )
+            checkpoint = _resolve(
+                runtime,
+                values.get(
+                    "checkpoint_db",
+                    "checkpoints/checkpoints.sqlite",
+                ),
+            )
+            provenance = _resolve(
+                runtime,
+                values.get("provenance_file", "provenance.json"),
+            )
+        else:
+            # Compatibility for stored configs and callers that still provide
+            # the workflow_v2-relative Stage 0 layout.
+            work = _resolve(workflow, values.get("work_dir", "work"))
+            runs = _resolve(work, values.get("runs_dir", "runs"))
+            submissions = _resolve(
+                workflow,
+                values.get("submissions_dir", "submissions"),
+            )
+            checkpoint = _resolve(
+                workflow,
+                values.get("checkpoint_db", "work/checkpoints.sqlite"),
+            )
+            provenance = _resolve(
+                workflow,
+                values.get("provenance_file", "work/provenance.json"),
+            )
         assets = _resolve(
             project,
             values.get("assets_dir", "assets_dl"),
@@ -95,14 +141,6 @@ class RuntimePaths:
             project,
             values.get("asset_catalog", "asset_catalog.json"),
         )
-        checkpoint = _resolve(
-            workflow,
-            values.get("checkpoint_db", "work/checkpoints.sqlite"),
-        )
-        provenance = _resolve(
-            workflow,
-            values.get("provenance_file", "work/provenance.json"),
-        )
         prompt = _resolve(
             PACKAGE_ROOT,
             values.get("prompt_dir", "prompts"),
@@ -110,6 +148,7 @@ class RuntimePaths:
         return cls(
             project_root=project,
             workflow_root=workflow,
+            runtime_root=runtime,
             work_root=work,
             runs_root=runs,
             submissions_root=submissions,
@@ -145,6 +184,9 @@ class RuntimePaths:
     def resolve_workflow(self, value: str | Path) -> Path:
         return _resolve(self.workflow_root, value)
 
+    def resolve_runtime(self, value: str | Path) -> Path:
+        return _resolve(self.runtime_root, value)
+
     def resolve_project(self, value: str | Path) -> Path:
         return _resolve(self.project_root, value)
 
@@ -153,3 +195,8 @@ def runtime_paths(config: dict[str, Any] | None = None) -> RuntimePaths:
     """Convenience constructor used by runtime code."""
     return RuntimePaths.from_config(config)
 
+
+def legacy_checkpoint_db(workflow_root: Path | None = None) -> Path:
+    """Return the pre-Stage-5 checkpoint location for resume compatibility."""
+    workflow = (workflow_root or WORKFLOW_ROOT).expanduser().resolve()
+    return workflow / "work" / "checkpoints.sqlite"

@@ -1,7 +1,7 @@
 # AGEWEC リファクタリング実行ガイド
 
 最終更新: 2026-08-09
-状態: **第0〜4段階完了・第5段階着手前**
+状態: **第0〜5段階完了・第6段階着手前**
 対象: AGEWEC提出後の構造整理と保守性改善
 
 ## 1. この文書の目的
@@ -258,23 +258,25 @@ src/agewec_v2/phases/
 
 1. 新しいパス設定を使って新規Runが`runtime/`へ出力されるようにする
 2. 新規checkpointで中断・resumeを検証
-3. 既存`checkpoints.sqlite`をコピーしてresumeを検証
+3. 既存`checkpoints.sqlite`を読み取り、完了済みrunの復元を検証
 4. SQLite内とstate内の絶対パス依存を確認
-5. 互換性を確認できたデータだけ移動
-6. 必要に応じて旧パスの互換リンクまたは移行処理を一定期間残す
+5. 旧データは移動せず、新規Runだけを`runtime/`へ出力
+6. 新checkpointに無いrunは旧checkpointから安全に読み取る
 
 重要:
 
-- `work/checkpoints.sqlite`だけを単純移動しない
+- `work/checkpoints.sqlite`だけを単純移動・コピーして既定化しない
 - 過去RunのJSON・HTML・checkpointには絶対パスが含まれ得る
 - Git追跡外であることと、安全に移動できることは別問題
 - 提出Runと証跡は、不要と判断しても即削除しない
+- 未完了の旧runは専用のstate移行なしに継続しない
 
 完了条件:
 
 - 新規Runが`runtime/`で完走
 - 中断した新規Runをresume可能
-- 選定した既存Runをresumeまたは読み取り可能
+- 選定した完了済み既存Runを読み取り可能
+- 未完了の旧runは危険な継続を明示的に拒否
 - レポート内の画像・動画参照が壊れていない
 
 ### 第6段階: 正式ディレクトリへの機械的移設
@@ -426,7 +428,7 @@ SQLiteファイルが開けるだけでは移行成功ではない。保存state
 - [x] 第2段階: 分割前の契約とパス管理（246テスト・mock完走・差し戻し4経路検証済み）
 - [x] 第3段階: `pipeline_runtime.py`分割（249テスト・mock完走・差し戻し4経路検証済み）
 - [x] 第4段階: LLM・決定論ノード分割（253テスト・mock完走・差し戻し4経路検証済み）
-- [ ] 第5段階: `runtime/`集約
+- [x] 第5段階: `runtime/`集約（260テスト・mock完走・新旧checkpoint互換検証済み）
 - [ ] 第6段階: 正式ディレクトリへ移設
 - [ ] 第7段階: 提出物・文書整理
 - [ ] 第8段階: 最終検証
@@ -473,3 +475,20 @@ SQLiteファイルが開けるだけでは移行成功ではない。保存state
 - mock本番CLIが30秒・1カットで完走し、動画・レポート・証跡を生成（Runway・外部LLM未使用）
 - 差し戻し`d / s / g / n`の4経路がすべて成功
 - 互換窓口は第6段階まで維持し、第8段階で削除可否を判断
+
+## 15. 第5段階の完了記録
+
+- 新規実行の作業成果物を`runtime/runs/<run_id>/`へ集約
+- 新規提出候補を`runtime/submissions/<run_id>/`へ集約
+- 新checkpointを`runtime/checkpoints/checkpoints.sqlite`へ分離
+- `runtime/`全体をGit追跡外に設定
+- `RuntimePaths`にruntime root基準と旧workflow root基準の互換解決を実装
+- 新checkpointを優先し、存在しないrunは旧checkpointから自動検出
+- 完了済み旧run`run-9797e26e0c`を無再実行で読み取り確認
+- 未完了旧runは移行前絶対パスの誤用を防ぐため安全に停止
+- 新runtimeの30秒mock本番CLIが完走し、動画・レポート・証跡を生成
+- 新runtimeのH3中断後、同じrun_idから再開・完走を確認
+- レポートの相対動画参照と30秒・576×384の最終動画を確認
+- 全260テスト成功（テスト生成物は一時ディレクトリへ隔離）
+- 旧`workflow_v2/work`・`workflow_v2/submissions`は移動・削除せず保持
+- 提出済5ファイルのSHA-256が原本と一致

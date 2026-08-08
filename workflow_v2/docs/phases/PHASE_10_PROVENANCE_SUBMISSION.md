@@ -12,7 +12,7 @@ H3承認後、提出動画だけでなく、全Agentの出力、判断、承認�
 ## 出力
 
 ```text
-submissions/<run_id>/
+runtime/submissions/<run_id>/
 ├── final_video.mp4
 ├── manifest.json
 ├── provenance.json
