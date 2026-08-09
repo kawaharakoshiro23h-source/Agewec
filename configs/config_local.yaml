@@ -1,0 +1,196 @@
+project:
+  target_award: 夜景賞
+  theme: 北九州の魅力を世界へ
+  target_duration_seconds: 30
+
+# manual / supervised / autonomous / custom
+autonomy_preset: manual
+
+review_policies:
+  executive_producer: always
+  creative_director: always
+  writer_storyboard: always
+  asset_curator: always
+  director: always
+  support_video_creator: always
+  image_video_production: never
+  cut_visual_qa: always
+  visual_qa: always
+  post_production: always
+  review_board: always
+  final_submission: always
+  provenance: on_exception
+
+review:
+  confidence_threshold: 0.75
+  max_retries_per_phase: 2
+
+storyboard:
+  max_narration_characters_per_second: 8
+  duration_large_adjustment_warning_seconds: 2.0
+  narration_language: ja
+  auto_normalize_narration: true
+  final_default_media_requirement: video_required
+
+assets:
+  require_primary_for_every_cut: true
+  prefer_local: true
+  usage_scope: agewec_submission
+  auto_download_missing: false
+  alternatives_per_cut: 2
+
+execution_limits:
+  max_retries_per_phase: 2
+  phase_retry_overrides:
+    support_video_creator: 6
+    image_video_production: 20
+    cut_visual_qa: 20
+    visual_qa: 4
+    post_production: 2
+    review_board: 2
+  max_total_phase_executions: 60
+  max_runtime_minutes: 60
+  on_limit: human_review
+  max_generation_attempts_per_cut: 2
+  max_total_production_attempts: 20
+
+llm:
+  enabled: false
+
+production:
+  backend: mock
+  # 課金を伴うバックエンド（クラウドAPI）用の上限。
+  # 送信前に「実課金累計 + 次回見積 <= limit_usd」を必ず検査する。
+  # ローカル(comfy/mock)は無料なのでこの設定に関わらず素通しする。
+  cost_guard:
+    enabled: true
+    limit_usd: 20.0
+  max_video_cuts_per_run: 1
+  continue_on_cut_error: false
+  profile: draft
+  profiles:
+    draft:
+      width: 576
+      height: 384
+      frames: 49
+      steps: 20
+      fps: 24
+    final:
+      width: 768
+      height: 512
+      frames: 97
+      steps: 30
+      fps: 24
+  model_constraints:
+    frame_multiple: 8
+    frame_offset: 1
+    max_frames: 257
+
+qa:
+  duration_tolerance_seconds: 0.25
+  representative_frame_count: 3
+
+post_production:
+  width: 576
+  height: 384
+  fps: 24
+  duration_tolerance_seconds: 0.25
+
+review_board:
+  mode: human_only
+  skip_reason: submission deadline priority
+  pass_threshold: 3.8
+  minimum_criterion_score: 3.0
+  require_no_blocking_issues: true
+
+final_submission:
+  require_human: true
+
+comfy:
+  base_url: http://127.0.0.1:8188
+  workflow_api_json: workflows/ltx_i2v_api.json
+  poll_interval_seconds: 2
+  timeout_seconds: 1800
+  inputs:
+    image: {node_id: "", input: image}
+    positive_prompt: {node_id: "", input: text}
+    negative_prompt: {node_id: "", input: text}
+    width: {node_id: "", input: width}
+    height: {node_id: "", input: height}
+    frames: {node_id: "", input: length}
+    steps: {node_id: "", input: steps}
+    fps: {node_id: "", input: fps}
+    seed: {node_id: "", input: noise_seed}
+    file_prefix: {node_id: "", input: filename_prefix}
+
+# --- クラウド動画生成（Runway Dev API）-------------------------------------
+# 単一の統合で複数モデルを切り替えられる。model を変えるだけで比較できる。
+#   backend: runway / model: veo3.1_fast  のように production 側で指定する。
+# 料金・許容尺は変動するため、必ず Runway のダッシュボードで最新値を確認すること。
+runway:
+  base_url: https://api.dev.runwayml.com
+  api_version: "2024-11-06"        # X-Runway-Version ヘッダ
+  api_key_env: RUNWAY_API_KEY      # 実キーは .env に置く
+  poll_interval_seconds: 5
+  timeout_seconds: 900
+  ratio: "1280:720"
+  models:
+    gen4.5:
+      # Runway公式: 2〜10秒の整数尺。
+      allowed_seconds: [2, 3, 4, 5, 6, 7, 8, 9, 10]
+      resolutions: ["1280:720"]
+      supports_seed: true
+      supports_negative_prompt: false
+      has_native_audio: false
+      cost_per_second_usd: 0.12
+    veo3.1_fast:
+      allowed_seconds: [4, 6, 8]
+      resolutions: ["1280:720"]
+      supports_seed: true
+      supports_negative_prompt: true
+      has_native_audio: true
+      request_audio: false         # 可能なら音声を生成させない
+      cost_per_second_usd: 0.10    # no-audio価格
+    seedance2:
+      # Runway公式: 4〜15秒の整数尺。
+      allowed_seconds: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      resolutions: ["1280:720"]
+      # 実API検証済み(2026-08-04 run-d6cdf58046): seedを送ると400。
+      #   {"code":"unrecognized_keys","keys":["seed"]}
+      # Seedance系は seed パラメータ自体を持たない。
+      supports_seed: false
+      # negativePromptはVeo系のみ公式に明記。Seedanceには送らない。
+      supports_negative_prompt: false
+      has_native_audio: true
+      # audioフィールドの受理可否が未確認なので送らない。出力音声はPhase 08で除去。
+      cost_per_second_usd: 0.36    # 480p/720p価格
+    seedance2_fast:
+      # 尺は seedance2 と同一（利用者確認済み）。
+      allowed_seconds: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      resolutions: ["1280:720"]
+      # seedance2 の400実績から同族と判断。実APIで再確認すること。
+      supports_seed: false
+      supports_negative_prompt: false
+      has_native_audio: true
+      cost_per_second_usd: 0.29    # Runway公式: 29 credits/秒（480p/720p）
+    hailuo3:
+      # Runway Dev公式Playground: 2K、5〜15秒、15 credits/秒。
+      allowed_seconds: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      resolutions: ["2K"]
+      resolution: "2K"
+      prompt_image_format: keyframes
+      # Runway経由で確認済みなのはI2V。未確認のT2Vへ誤送信しない。
+      generation_modes: [image_to_video]
+      supports_seed: false
+      supports_negative_prompt: false
+      has_native_audio: true
+      cost_per_second_usd: 0.15
+
+paths:
+  runtime_dir: runtime
+  runs_dir: runs
+  checkpoint_db: checkpoints/checkpoints.sqlite
+  provenance_file: provenance.json
+  submissions_dir: submissions
+  assets_dir: assets_dl
+  asset_catalog: asset_catalog.json

@@ -1,7 +1,7 @@
 # AGEWEC リファクタリング実行ガイド
 
 最終更新: 2026-08-09
-状態: **第0〜5段階完了・第6段階着手前**
+状態: **第0〜6段階完了・第7段階着手前**
 対象: AGEWEC提出後の構造整理と保守性改善
 
 ## 1. この文書の目的
@@ -39,9 +39,9 @@
 
 開始前に、ターミナルの`pwd`と`git rev-parse --show-toplevel`が作業版を指していることを必ず確認する。
 
-## 3. 現在の状態
+## 3. 開始時の状態
 
-現在は、提出物としては整理されている一方、開発環境では旧版・現行版・実行生成物が混在している。
+リファクタリング開始時は、提出物としては整理されている一方、開発環境では旧版・現行版・実行生成物が混在していた。
 
 ```text
 Agewec/
@@ -70,6 +70,23 @@ Agewec/
 - `pyproject.toml`は旧版`src/agewec`をインストール対象にしているため、editable installで旧版が選ばれる危険がある
 - `pipeline_runtime.py`と`nodes_llm.py`が大きく、Phase間の状態変更を追いにくい
 - `work/checkpoints.sqlite`と既存Runには、旧配置や絶対パスへの依存が含まれる可能性がある
+
+### 第6段階完了後の正式配置
+
+```text
+Agewecのコピー/
+├── src/agewec_v2/       # 現行パイプラインの正本
+├── configs/             # local mock / LLM・動画API設定
+├── tests/               # 正式テスト入口
+├── docs/                # 仕様・運用資料
+├── scripts/             # 補助スクリプト
+├── workflows/           # ComfyUI API workflow
+├── runtime/             # 新規Run・checkpoint・提出候補（Git追跡外）
+├── archive/legacy_v1/   # 旧版
+└── workflow_v2/         # 旧入口と過去Runだけを保持する一時互換領域
+```
+
+新規実装は`src/agewec_v2/`へ追加する。`workflow_v2`配下のコード・設定・テスト・workflowは正本へのシンボリックリンクであり、二重編集しない。
 
 ## 4. 理想状態
 
@@ -429,7 +446,7 @@ SQLiteファイルが開けるだけでは移行成功ではない。保存state
 - [x] 第3段階: `pipeline_runtime.py`分割（249テスト・mock完走・差し戻し4経路検証済み）
 - [x] 第4段階: LLM・決定論ノード分割（253テスト・mock完走・差し戻し4経路検証済み）
 - [x] 第5段階: `runtime/`集約（260テスト・mock完走・新旧checkpoint互換検証済み）
-- [ ] 第6段階: 正式ディレクトリへ移設
+- [x] 第6段階: 正式ディレクトリへ移設（261テスト・新旧CLI・wheel・mock・新旧resume検証済み）
 - [ ] 第7段階: 提出物・文書整理
 - [ ] 第8段階: 最終検証
 
@@ -492,3 +509,21 @@ SQLiteファイルが開けるだけでは移行成功ではない。保存state
 - 全260テスト成功（テスト生成物は一時ディレクトリへ隔離）
 - 旧`workflow_v2/work`・`workflow_v2/submissions`は移動・削除せず保持
 - 提出済5ファイルのSHA-256が原本と一致
+
+## 16. 第6段階の完了記録
+
+- 現行パッケージを`workflow_v2/agewec_v2`から`src/agewec_v2`へ機械的に移設
+- tests、docs、scripts、configs、workflowsをリポジトリ直下へ統合
+- `pyproject.toml`のwheel対象を`src/agewec_v2`へ変更
+- config、prompt、モニターUI、Comfy workflowの探索を正式配置へ更新
+- 旧`workflow_v2`入口には正本へのシンボリックリンクを置き、ソースを二重管理せず互換性を維持
+- 旧`workflow_v2/work`・`workflow_v2/submissions`は過去Run参照のため未変更で保持
+- 正式CLIで30秒・1カットのmock run`run-2eb45fafba`が完走
+- 新runtimeの完了済みrunを同じrun_idから無再生成でresume
+- 完了済み旧run`run-9797e26e0c`を旧checkpointから無再生成で読み取り
+- 旧`PYTHONPATH=workflow_v2`入口からimport、CLI、全テストが成功
+- wheel生成に成功し、全prompt Markdownと`monitor/ui.html`の同梱を確認
+- 全261テスト成功（正式入口・旧互換入口の両方）
+- 原本Git作業ツリーがcleanであることを確認
+- 提出済5ファイルのSHA-256が原本・作業版・開始時記録で一致
+- Runway・外部LLM APIは未使用

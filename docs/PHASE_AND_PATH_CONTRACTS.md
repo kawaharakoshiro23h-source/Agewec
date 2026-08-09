@@ -1,7 +1,7 @@
 # Phase・パス契約
 
 最終更新: 2026-08-09
-対象: 第2〜5段階（巨大ファイル分割・runtime集約後の境界固定）
+対象: 第2〜6段階（巨大ファイル分割・runtime集約・正式配置後の境界固定）
 
 ## 目的
 
@@ -9,7 +9,7 @@
 
 ## パスの所有者
 
-パス解決は`workflow_v2/agewec_v2/paths.py`の`RuntimePaths`へ集約する。
+パス解決は`src/agewec_v2/paths.py`の`RuntimePaths`へ集約する。
 
 | 種類 | 基準ディレクトリ | 現在の既定値 |
 | --- | --- | --- |
@@ -20,13 +20,14 @@
 | asset catalog | project root | `asset_catalog.json` |
 | checkpoints | runtime root | `runtime/checkpoints/checkpoints.sqlite` |
 | shared provenance | runtime root | `runtime/provenance.json` |
-| prompts | package root | `agewec_v2/prompts` |
+| configs | project root | `configs` |
+| prompts | package root | `src/agewec_v2/prompts` |
 
 `paths.runtime_dir`を持つ設定は、実行生成物の相対パスをruntime root基準で解決する。`runtime_dir`を持たず旧キーを明示する保存済み設定は、互換性のためworkflow root基準の旧契約を維持する。Phase実装へ個別のパス計算を追加しない。
 
 ## Phase契約
 
-機械可読な一覧は`workflow_v2/agewec_v2/phase_contracts.py`の`PHASE_CONTRACTS`を正とする。全Phaseに、入力・出力・副作用を宣言する。
+機械可読な一覧は`src/agewec_v2/phase_contracts.py`の`PHASE_CONTRACTS`を正とする。全Phaseに、入力・出力・副作用を宣言する。
 
 特に次の規約を壊してはならない。
 
@@ -91,3 +92,12 @@ LLMを利用する役割処理は`roles/`、LLMを利用できない場合の決
 5. 新checkpointに無く旧checkpointにある完了済みrunは、自動検出して読み取り可能とする。
 6. 未完了の旧runは、state内の移行前絶対パスを誤用しないよう継続を拒否する。再開には専用のstate移行が必要となる。
 7. 新runtimeの未完了runは、同じrun_idから通常どおり再開できる。
+
+## 第6段階後の正式配置・互換契約
+
+1. 現行パッケージの正本は`src/agewec_v2/`とする。
+2. 設定は`configs/`、テストは`tests/`、仕様書は`docs/`、補助処理は`scripts/`を正とする。
+3. `workflow_v2/agewec_v2`、`workflow_v2/tests`、旧設定・workflowは一時的なシンボリックリンクとし、正本を二重管理しない。
+4. 旧`workflow_v2/work`・`workflow_v2/submissions`は過去Run参照のため保持するが、新規出力先にはしない。
+5. 新規CLIは`agewec`エントリポイントを正とし、旧`PYTHONPATH=workflow_v2`入口は第8段階の監査まで維持する。
+6. promptとモニターUIはパッケージ相対で探索し、リポジトリ直下の旧配置を仮定しない。
