@@ -1,4 +1,4 @@
-"""CLI runner for AGEWEC workflow_v2."""
+"""CLI runner for the AGEWEC pipeline."""
 from __future__ import annotations
 
 import argparse
@@ -449,7 +449,7 @@ def main() -> None:
             )
         print(f"  {'合計':<26} {summary['total_phase_seconds']:>8.1f}s")
 
-    print("\n=== AGEWEC workflow_v2 完了 ===")
+    print("\n=== AGEWEC Pipeline 完了 ===")
     print("run_id:", run_id)
     print("aborted:", result.get("aborted", False))
     print("current_phase:", result.get("current_phase"))

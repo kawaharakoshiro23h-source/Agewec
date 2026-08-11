@@ -1,7 +1,7 @@
 # AGEWEC リファクタリング実行ガイド
 
 最終更新: 2026-08-11
-状態: **第0〜7段階完了・第8段階着手前**
+状態: **第0〜8段階完了**
 対象: AGEWEC提出後の構造整理と保守性改善
 
 ## 1. この文書の目的
@@ -71,7 +71,7 @@ Agewec/
 - `pipeline_runtime.py`と`nodes_llm.py`が大きく、Phase間の状態変更を追いにくい
 - `work/checkpoints.sqlite`と既存Runには、旧配置や絶対パスへの依存が含まれる可能性がある
 
-### 第6段階完了後の正式配置
+### 第8段階完了後の正式配置
 
 ```text
 Agewecのコピー/
@@ -84,10 +84,10 @@ Agewecのコピー/
 ├── runtime/             # 新規Run・checkpoint・提出候補（Git追跡外）
 ├── deliverables/        # 確定提出物・派生版（本体はGit追跡外）
 ├── archive/legacy_v1/   # 旧版
-└── workflow_v2/         # 旧入口と過去Runだけを保持する一時互換領域
+└── workflow_v2/         # 過去Run・旧checkpointの読み取り互換領域
 ```
 
-新規実装は`src/agewec_v2/`へ追加する。`workflow_v2`配下のコード・設定・テスト・workflowは正本へのシンボリックリンクであり、二重編集しない。
+新規実装は`src/agewec_v2/`へ追加する。`workflow_v2`には旧`work`・`submissions`だけを保持し、新しいコード・設定・テスト・workflowを置かない。
 
 ## 4. 理想状態
 
@@ -449,7 +449,7 @@ SQLiteファイルが開けるだけでは移行成功ではない。保存state
 - [x] 第5段階: `runtime/`集約（260テスト・mock完走・新旧checkpoint互換検証済み）
 - [x] 第6段階: 正式ディレクトリへ移設（261テスト・新旧CLI・wheel・mock・新旧resume検証済み）
 - [x] 第7段階: 提出物・文書整理（確定提出物75ファイルと派生物4件のハッシュ一致）
-- [ ] 第8段階: 最終検証
+- [x] 第8段階: 最終検証（261テスト・mock・モニター・新旧resume・wheel・全提出物ハッシュ検証済み）
 
 ---
 
@@ -541,3 +541,22 @@ SQLiteファイルが開けるだけでは移行成功ではない。保存state
 - `deliverables/README.md`に確定版・派生版・runtime出力の境界と固定ハッシュを記録
 - 大容量の提出物本体はGit追跡外とし、分類ルールだけを追跡
 - 原本フォルダと外部APIには未接触
+
+## 18. 第8段階の完了記録
+
+- `uv sync --offline`が成功し、editable import先が`src/agewec_v2`であることを確認
+- 全261テスト成功
+- 正式CLIの30秒・1カットmock run`run-9a84d2daac`が完走
+- 最終mock動画がH.264・576×384・24fps・30秒であることを確認
+- 提出候補の必須ファイルが揃い、工程レポート内4件のメディア参照がすべて相対パスかつ実在
+- 読み取り専用モニターのUIとRun一覧APIがHTTP 200を返し、最終mock runを表示
+- 新checkpointのmock runを同じrun_idから無再生成でresume
+- 旧checkpointの完了済み`run-9797e26e0c`を、旧入口リンクなしで無再生成読み取り
+- wheel生成が成功し、全promptと`monitor/ui.html`の同梱を確認
+- 確定提出物75ファイルのSHA-256が原本と作業版で完全一致
+- 原本Git作業ツリーがclean、開始コミット`c5cd4ed`のままであることを確認
+- 旧`workflow_v2`のコード・設定・テスト・workflow用シンボリックリンク5件を削除
+- 旧`workflow_v2/work`・`workflow_v2/submissions`は旧Run読み取り互換のため保持
+- Pythonの再エクスポート層4件は、テスト・既存importが残る安定互換面として維持し、新規ロジック追加を禁止
+- README、運用ガイド、LLM資料、構成図、パス契約を正式配置へ更新
+- Runway・外部LLM APIは未使用

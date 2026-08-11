@@ -1,4 +1,4 @@
-"""Media backends used only by workflow_v2.
+"""Media backends used by the AGEWEC pipeline.
 
 動画生成は共通契約（base.py）で抽象化し、設定でバックエンドを切り替える。
 

@@ -17,7 +17,7 @@ AGEWEC_LLM_MODEL=<LM Studioに表示されるモデルID>
 4. 実行する。
 
 ```bash
-PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.run
+uv run agewec --config configs/config_llm.yaml
 ```
 
 ## Cloud
@@ -59,11 +59,10 @@ OpenAI呼び出し時は`runtime/llm_cost_ledger.json`へ、この
 
 ## Safe test without LLM
 
-旧v2設定を明示すると、固定出力でグラフ構造だけを検証できる。
+local mock設定を明示すると、固定出力でグラフ構造だけを検証できる。
 
 ```bash
-PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.run \
-  --config workflow_v2/config.yaml --auto
+uv run agewec --config configs/config_local.yaml --auto
 ```
 
 ## Failure behavior

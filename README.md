@@ -15,7 +15,7 @@ workflows/           ComfyUI API workflow
 runtime/             新規Run・checkpoint・提出候補（Git追跡外）
 deliverables/        確定提出物・派生版（本体はGit追跡外）
 archive/legacy_v1/   参照されない旧版
-workflow_v2/         旧コマンドと過去Runのための一時互換領域
+workflow_v2/         過去Run・旧checkpointの読み取り互換領域
 ```
 
 パッケージ名は互換性のため当面`agewec_v2`を維持します。正式な実装は`src/agewec_v2/`です。
@@ -140,16 +140,11 @@ uv run python -m agewec_v2.test_revision_routes --all
 uv run python -m unittest discover -s tests -v
 ```
 
-## 旧コマンドの一時互換
+## 旧Runの読み取り互換
 
-Stage 8で利用箇所を監査するまで、次の旧入口も維持します。
+旧`workflow_v2`のコード・設定・テスト入口はStage 8で終了しました。実行には正式CLIと`configs/`を使用してください。
 
-```bash
-PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.run \
-  --config workflow_v2/config.yaml
-```
-
-旧`workflow_v2/work`と`workflow_v2/submissions`は、過去Runの参照を壊さないため移動・削除していません。
+旧`workflow_v2/work`と`workflow_v2/submissions`は、過去Runのresume・レポート参照を壊さないため読み取り互換領域として保持しています。新しいコードや生成物は置きません。
 
 ## 現在の境界
 

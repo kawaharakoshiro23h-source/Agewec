@@ -1,7 +1,7 @@
 """Compatibility exports for deterministic fallbacks.
 
-New code imports ``agewec_v2.fallbacks`` modules directly.  Historical symbols
-remain available here through the migration window.
+New code imports ``agewec_v2.fallbacks`` modules directly. Existing symbols
+remain available here as a stable, logic-free compatibility surface.
 """
 from __future__ import annotations
 

@@ -89,25 +89,33 @@ llm:
 ## 3. File layout
 
 ```text
-workflow_v2/
-├── agewec_v2/
-│   ├── llm/
-│   │   ├── __init__.py
-│   │   ├── config.py
-│   │   ├── provider.py
-│   │   ├── role_runner.py
-│   │   └── schemas.py
-│   ├── prompts/
-│   │   ├── executive_producer.md
-│   │   ├── creative_director.md
-│   │   ├── writer_storyboard.md
-│   │   ├── asset_curator.md
-│   │   ├── director.md
-│   │   ├── visual_qa.md
-│   │   ├── post_production.md
-│   │   └── review_board.md
-│   └── nodes.py
-└── config.yaml
+src/agewec_v2/
+├── llm/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── provider.py
+│   ├── role_runner.py
+│   └── schemas.py
+├── roles/
+│   ├── common.py
+│   ├── project.py
+│   ├── storyboard.py
+│   ├── assets.py
+│   ├── director.py
+│   └── downstream.py
+└── prompts/
+    ├── executive_producer.md
+    ├── creative_director.md
+    ├── writer_storyboard.md
+    ├── asset_curator.md
+    ├── director.md
+    ├── visual_qa.md
+    ├── post_production.md
+    └── review_board.md
+
+configs/
+├── config_local.yaml
+└── config_llm.yaml
 ```
 
 ## 4. Provider contract

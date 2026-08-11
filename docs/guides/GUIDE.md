@@ -1,6 +1,4 @@
-# AGEWEC Workflow v2
-
-既存の `src/agewec` を変更せずに検証する、Review Gate型の新ワークフローです。
+# AGEWEC Pipeline Guide
 
 ## パイプライン
 
@@ -10,51 +8,70 @@ Executive Producer
 → Writer / Storyboard
 → Asset Curator & Rights
 → Director
+→ Support Video Creator
 → Image / Video Production
-→ Visual QA
+→ Cut Visual QA
+→ Sequence QA
 → Post Production
-→ Review Board
-→ Final Submission Review
+→ Review Board / Final Submission Review
 → Provenance
 ```
 
-各処理ノードの直後には独立したReview Gateがあります。生成処理と承認処理を
-分けているため、承認から再開しただけで外部APIやComfyUIが二重実行されません。
+各判断工程のReview Gateでは、承認・フィードバック付き差し戻し・中止を選べます。生成処理と承認処理は分離されているため、承認から再開しただけで外部動画APIを二重実行しません。
 
-Review Gateは工程ごとに次の3種類を選択できます。
+## 正式配置
 
-- `always`: 毎回、人間の判断を待つ
-- `on_exception`: エラー、必須成果物不足、低信頼度の場合だけ待つ
-- `never`: 停止せず進む
+- 実装: `src/agewec_v2/`
+- 設定: `configs/`
+- テスト: `tests/`
+- 新規実行データ: `runtime/`
+- 確定提出物: `deliverables/`
+- 旧Run読み取り領域: `workflow_v2/work`、`workflow_v2/submissions`
 
-人間が選べる操作は `approve`、`retry_with_feedback`、`abort` です。
+## 安全なmock実行
 
-## 既存コードとの関係
-
-- 既存の `src/agewec`、`config.yaml`、`work/` は変更しません。
-- 素材選定では、プロジェクト直下の既存 `asset_catalog.json` と
-  `assets_dl/` を読み取り専用で参照します。
-- v2の設定・生成物・テストはすべて `workflow_v2/` 内に置きます。
-
-## 実行
+外部LLM・動画生成APIを使わずに全工程を確認します。
 
 ```bash
-PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.run
+uv run agewec --config configs/config_local.yaml
 ```
 
-全Review Gateを自動承認して構造だけ検証:
+Review Gateを自動承認する場合:
 
 ```bash
-PYTHONPATH=workflow_v2 .venv/bin/python -m agewec_v2.run --auto
+uv run agewec --config configs/config_local.yaml --auto
 ```
 
-テスト:
+H3が人間確認必須の場合は、`--auto`でも最終提出前に停止します。
+
+## LLM・動画生成を使う実行
+
+`.env`と`configs/config_llm.yaml`のバックエンド、モデル、対象カット、費用上限を確認してから実行します。
 
 ```bash
-PYTHONPATH=workflow_v2 .venv/bin/python -m unittest \
-  discover -s workflow_v2/tests -v
+uv run agewec --config configs/config_llm.yaml
 ```
 
-`config.yaml` の `production.backend` は初期状態で `mock` です。
-ComfyUIのAPI workflowを保存してノードマッピングを設定した後に
-`comfy` へ切り替えます。
+## 再開
+
+```bash
+uv run agewec --resume run-xxxxxxxxxx
+```
+
+新規checkpointは`runtime/checkpoints/checkpoints.sqlite`へ保存されます。完了済み旧Runは旧checkpointから読み取り可能です。
+
+## 監視モニター
+
+```bash
+uv run python -m agewec_v2.monitor
+```
+
+既定では`runtime/runs`を読み取り専用で表示します。
+
+## テスト
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
+より詳しい構成と注意点は、ルートの`README.md`と`docs/PHASE_AND_PATH_CONTRACTS.md`を参照してください。

@@ -67,8 +67,7 @@ The API-format workflow is saved and the preflight status is ready. Keep ComfyUI
 ## Tests
 
 ```bash
-PYTHONPATH=workflow_v2 .venv/bin/python -m unittest discover \
-  -s workflow_v2/tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
 実装時点で、自律ループ、LLM共通プロバイダ、Comfy API往復、1カット制限を含む

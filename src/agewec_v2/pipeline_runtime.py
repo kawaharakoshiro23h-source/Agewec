@@ -1,8 +1,8 @@
 """Compatibility exports for the split runtime phases.
 
 New production code imports ``agewec_v2.phases`` modules directly.  This
-module retains the historical symbols for tests and third-party callers during
-the migration window.
+module retains the historical symbols as a stable compatibility layer for tests
+and third-party callers. New runtime logic must live under ``phases``.
 """
 from __future__ import annotations
 

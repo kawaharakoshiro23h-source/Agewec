@@ -1,4 +1,4 @@
-"""Provider-independent LLM integration for workflow_v2."""
+"""Provider-independent LLM integration for the AGEWEC pipeline."""
 
 from .config import LLMSettings
 from .provider import OpenAICompatibleProvider

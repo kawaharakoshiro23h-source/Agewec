@@ -69,11 +69,11 @@
 
 ```bash
 cd /Users/koshiro/Downloads/Agewec
-PYTHONPATH=workflow_v2 .venv/bin/python -c "
+uv run python -c "
 from dotenv import load_dotenv; load_dotenv()
 import yaml, pathlib, time
 from agewec_v2.backends.runway import build_runway_backend
-cfg=yaml.safe_load(open('workflow_v2/config_llm.yaml',encoding='utf-8'))
+cfg=yaml.safe_load(open('configs/config_llm.yaml',encoding='utf-8'))
 b=build_runway_backend(cfg['runway'],model='gen4.5',output_path_for=lambda c,a:'/tmp/x.mp4')
 t=time.time()
 print(b._upload_image(pathlib.Path('assets_dl/asset-001_夜景_皿倉_皿倉山夜景03.jpg')), f'{time.time()-t:.1f}秒')
@@ -217,12 +217,11 @@ decision["target_cut_id"] = int(cut_id)      # バリデーションなし
    ```
 
 2. **`MemorySaver` → `SqliteSaver`** ✅ 実装済み
-   `work/checkpoints.sqlite`へ状態を保存し、次のコマンドで承認待ちまたは
+   `runtime/checkpoints/checkpoints.sqlite`へ状態を保存し、次のコマンドで承認待ちまたは
    最後に完了したノード境界から再開できる。
 
    ```bash
-   PYTHONPATH=workflow_v2 .venv/bin/python \
-     -m agewec_v2.run --resume run-xxxxxxxxxx
+   uv run agewec --resume run-xxxxxxxxxx
    ```
 
    完了済みrunを指定した場合は保存済みの最終状態だけを表示し、生成APIを

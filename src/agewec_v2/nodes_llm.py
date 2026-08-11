@@ -1,7 +1,7 @@
 """Compatibility exports for split LLM role modules.
 
-The guarded graph imports roles directly through ``nodes_runtime``.  This file
-keeps the historical import surface available during the migration window.
+The guarded graph imports roles directly through ``nodes_runtime``. This file
+keeps the historical import surface as a stable, logic-free compatibility layer.
 """
 from __future__ import annotations
 

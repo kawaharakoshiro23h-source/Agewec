@@ -1,4 +1,4 @@
-"""Stage 3 module boundaries and compatibility exports."""
+"""Module boundaries and stable compatibility exports."""
 from __future__ import annotations
 
 import unittest

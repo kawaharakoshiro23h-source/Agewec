@@ -1,0 +1,25 @@
+flowchart TD
+    ROOT["AGEWEC project root"]
+    ROOT --> SRC["src/agewec_v2<br/>現行パイプライン"]
+    ROOT --> CFG["configs<br/>実行設定"]
+    ROOT --> TEST["tests<br/>自動テスト"]
+    ROOT --> DOC["docs<br/>設計・運用・提出文書"]
+    ROOT --> RT["runtime<br/>新規Run・checkpoint・提出候補<br/>Git追跡外"]
+    ROOT --> DEL["deliverables<br/>確定提出物・派生版<br/>本体はGit追跡外"]
+    ROOT --> LEGACY["workflow_v2<br/>旧Run読み取り互換のみ"]
+    ROOT --> ARCHIVE["archive/legacy_v1<br/>旧実装"]
+
+    SRC --> ROLES["roles / fallbacks<br/>Phase 01–05"]
+    SRC --> PHASES["phases<br/>Phase 05.5–10"]
+    SRC --> BACKENDS["backends<br/>mock / Comfy / Runway"]
+    SRC --> PROMPTS["prompts<br/>役割プロンプト"]
+
+    RT --> RUNS["runs"]
+    RT --> CHECKPOINTS["checkpoints"]
+    RT --> SUBMISSIONS["submissions"]
+
+    DEL --> FINAL["AGEWEC2026<br/>確定提出物"]
+    DEL --> VARIANTS["variants<br/>派生動画"]
+
+    LEGACY --> OLDWORK["work<br/>旧checkpoint・Run"]
+    LEGACY --> OLDSUB["submissions<br/>旧提出候補"]
