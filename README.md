@@ -9,9 +9,11 @@ configs/             実行設定（local mock / LLM・外部動画API）
 src/agewec_v2/       現行パイプライン本体
 tests/               自動テスト
 docs/                設計・運用資料
+  └── submission/    応募フォーム案などの提出関連文書
 scripts/             補助スクリプト
 workflows/           ComfyUI API workflow
 runtime/             新規Run・checkpoint・提出候補（Git追跡外）
+deliverables/        確定提出物・派生版（本体はGit追跡外）
 archive/legacy_v1/   参照されない旧版
 workflow_v2/         旧コマンドと過去Runのための一時互換領域
 ```

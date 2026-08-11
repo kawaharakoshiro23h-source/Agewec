@@ -20,6 +20,9 @@ venv/
 # --- 生成物・作業ファイル ---
 work/
 runtime/
+# 確定提出物・動画派生版。大容量かつ内容を固定するためREADME以外は追跡しない。
+/deliverables/*
+!/deliverables/README.md
 # 北九州パレットからDLした実写（再取得可能なので追跡しない・二次配布禁止）
 assets_dl/
 # 生成物（再生成可能）
