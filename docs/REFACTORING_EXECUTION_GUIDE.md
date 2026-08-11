@@ -22,17 +22,17 @@
 ### 原本・保存版
 
 ```text
-/Users/koshiro/Downloads/Agewec
+<original-project-root>
 ```
 
 提出時点の保存版。**リファクタリングでは一切変更しない。** 比較・参照専用とする。
 
-`/Users/koshiro/Documents/Agewec`は上記フォルダへのシンボリックリンクであり、別のコピーではない。
+作業開始時に使用していた別パスは上記フォルダへのシンボリックリンクであり、別のコピーではない。
 
 ### リファクタリング作業版
 
 ```text
-/Users/koshiro/Downloads/Agewecのコピー
+<refactoring-working-copy>
 ```
 
 実装・移動・テスト・コミットは、すべてこちらで行う。
@@ -428,8 +428,8 @@ SQLiteファイルが開けるだけでは移行成功ではない。保存state
 別チャットや別担当へ引き継ぐ場合は、最低限次を伝える。
 
 ```text
-- 原本: /Users/koshiro/Downloads/Agewec（変更禁止）
-- 作業版: /Users/koshiro/Downloads/Agewecのコピー
+- 原本: <original-project-root>（変更禁止）
+- 作業版: <refactoring-working-copy>
 - 現在の段階:
 - 完了したコミット:
 - 全テスト結果:

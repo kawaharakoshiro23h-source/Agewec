@@ -52,7 +52,6 @@ configs/             実行設定（local mock / LLM・外部動画API）
 src/agewec_v2/       現行パイプライン本体
 tests/               自動テスト
 docs/                設計・運用資料
-  └── submission/    応募フォーム案などの提出関連文書
 scripts/             補助スクリプト
 workflows/           ComfyUI API workflow
 runtime/             新規Run・checkpoint・提出候補（Git追跡外）
@@ -183,6 +182,8 @@ uv run python -m agewec_v2.test_revision_routes --all
 uv run python -m unittest discover -s tests -v
 ```
 
+GitHubへpushまたはPull Requestを作成すると、同じテストとwheel buildをGitHub Actionsでも実行します。
+
 ## 旧Runの読み取り互換
 
 旧`workflow_v2`のコード・設定・テスト入口はStage 8で終了しました。実行には正式CLIと`configs/`を使用してください。
@@ -196,3 +197,9 @@ uv run python -m unittest discover -s tests -v
 - 実動画生成では、選択したバックエンドが要求する素材・APIキー・残高が必要
 
 詳細は[リファクタリング実行ガイド](docs/REFACTORING_EXECUTION_GUIDE.md)と[Phase・パス契約](docs/PHASE_AND_PATH_CONTRACTS.md)を参照してください。
+
+## ライセンス
+
+ソースコードと公開ドキュメントは[MIT License](LICENSE)で提供します。
+
+`assets_dl/`の観光写真、`deliverables/`の提出物、`runtime/`および旧Run内の生成物には、このライセンスを適用しません。各素材・生成サービス・イベントの利用条件と権利表示に従ってください。これらはGitリポジトリの追跡対象外です。

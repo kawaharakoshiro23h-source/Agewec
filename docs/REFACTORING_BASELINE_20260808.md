@@ -1,8 +1,9 @@
 # リファクタリング開始時ベースライン
 
 記録日: 2026-08-08  
-原本: `/Users/koshiro/Downloads/Agewec`  
-作業版: `/Users/koshiro/Downloads/Agewecのコピー`
+原本: `<original-project-root>`
+
+作業版: `<refactoring-working-copy>`
 
 ## Git
 
@@ -26,7 +27,7 @@
 実行コマンド:
 
 ```bash
-PYTHONPATH=workflow_v2 /Users/koshiro/Downloads/Agewec/.venv/bin/python \
+PYTHONPATH=workflow_v2 <original-project-root>/.venv/bin/python \
   -m unittest discover -s workflow_v2/tests -v
 ```
 
@@ -71,4 +72,3 @@ SHA-256ではなく尺・解像度・ストリーム・代表フレーム等で�
 
 - ベースライン測定ではRunway APIを呼び出していない
 - 今後も明示的な個別承認がない限り、リファクタリング検証で有料APIを使用しない
-

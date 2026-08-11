@@ -68,7 +68,7 @@
 ### 検証コマンド（無課金・アップロードのみ）
 
 ```bash
-cd /Users/koshiro/Downloads/Agewec
+cd /path/to/Agewec
 uv run python -c "
 from dotenv import load_dotenv; load_dotenv()
 import yaml, pathlib, time

@@ -175,7 +175,7 @@ production:
   backend: runway
   model: hailuo3
   # comfy / runway
-  # model : gen4.5 / veo3.1_fast / seedance2 / hailuo3 <-現在利用公開されていない状態
+  # model: gen4.5 / veo3.1_fast / seedance2 / hailuo3
   # 課金を伴うバックエンド（クラウドAPI）用の上限。
   # 送信前に「実課金累計 + 次回見積 <= limit_usd」を必ず検査する。
   # ローカル(comfy/mock)は無料なのでこの設定に関わらず素通しする。

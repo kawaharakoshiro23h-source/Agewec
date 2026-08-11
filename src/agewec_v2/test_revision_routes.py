@@ -9,7 +9,7 @@ Cut QA で人間が選ぶ4つの差し戻し先が、実際にグラフ上で正
   - 出力先は runtime/route_test/ に隔離
 
 使い方:
-    cd /Users/koshiro/Downloads/Agewec
+    cd /path/to/Agewec
 
     # 4ルートをまとめて自動検証（推奨・数十秒）
     uv run python -m agewec_v2.test_revision_routes --all

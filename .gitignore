@@ -20,6 +20,8 @@ venv/
 # --- 生成物・作業ファイル ---
 work/
 runtime/
+# 応募フォーム下書きなど、公開リポジトリへ含めない個人用メモ。
+/private_notes/
 # 確定提出物・動画派生版。大容量かつ内容を固定するためREADME以外は追跡しない。
 /deliverables/*
 !/deliverables/README.md
