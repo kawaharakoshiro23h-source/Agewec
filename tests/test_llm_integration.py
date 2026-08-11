@@ -28,6 +28,8 @@ from agewec_v2.nodes_llm import (
 )
 from agewec_v2.paths import PACKAGE_ROOT
 
+from _asset_fixture import configure_test_assets
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -258,6 +260,7 @@ class LLMIntegrationTest(unittest.TestCase):
         }
         config["production"]["backend"] = "mock"
         config["paths"] = {"runtime_dir": self.runtime.name}
+        configure_test_assets(config, Path(self.runtime.name) / "fixtures")
         config["production"]["max_video_cuts_per_run"] = 2
         # このテストは「全ロールがLLM経由で動くこと」を見るものなので、
         # 同梱configの固定絵コンテは無効にする（有効だとwriter_storyboardが

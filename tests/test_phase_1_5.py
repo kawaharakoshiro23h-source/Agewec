@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,15 +13,20 @@ from agewec_v2 import nodes
 from agewec_v2.graph_safe import _support_review_router, build_graph
 from agewec_v2.review import _apply_project_updates, resolve_policy
 
+from _asset_fixture import configure_test_assets
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class PhaseOneToFiveTest(unittest.TestCase):
     def setUp(self) -> None:
+        self.fixture_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.fixture_dir.cleanup)
         self.config = yaml.safe_load(
             (ROOT / "configs/config_local.yaml").read_text(encoding="utf-8")
         )
+        configure_test_assets(self.config, Path(self.fixture_dir.name))
         self.config["llm"] = {"enabled": False}
         # Most phase-contract tests need multiple cuts. Cut-limit behavior is
         # covered separately below.
